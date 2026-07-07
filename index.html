@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="zh-Hant-HK">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+<title>香港人生重開模擬器</title>
+<link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+<div id="app" class="phone-frame">
+
+  <!-- ===== 開始畫面 ===== -->
+  <section id="screen-start" class="screen active-screen">
+    <div class="start-content">
+      <div class="start-emoji">🏙️🧧</div>
+      <h1 class="game-title">香港人生重開模擬器</h1>
+      <p class="game-subtitle">由小一開始，每週安排時間，重新體驗屬於你嘅香港人生</p>
+      <button id="btn-new-game" class="btn btn-primary btn-large">開始新人生</button>
+      <button id="btn-continue-game" class="btn btn-secondary btn-large" style="display:none;">繼續舊有存檔</button>
+    </div>
+  </section>
+
+  <!-- ===== 開局設定畫面 ===== -->
+  <section id="screen-setup" class="screen">
+    <header class="setup-header">
+      <h2>開局設定</h2>
+      <p>揀返屬於你嘅出身，或者隨機抽一個人生</p>
+    </header>
+    <div class="setup-body" id="setup-body"></div>
+    <div class="setup-footer">
+      <button id="btn-random-life" class="btn btn-secondary">🎲 隨機抽人生</button>
+      <button id="btn-confirm-setup" class="btn btn-primary">確認並開始</button>
+    </div>
+  </section>
+
+  <!-- ===== 主遊戲畫面 ===== -->
+  <section id="screen-game" class="screen">
+
+    <!-- 頂部狀態 dashboard -->
+    <header id="top-dashboard" class="top-dashboard"></header>
+
+    <!-- 主要內容區（依 tab 切換） -->
+    <main id="main-content" class="main-content">
+
+      <div id="tab-status" class="tab-panel active-tab">
+        <div id="character-card" class="card character-card"></div>
+        <div id="goal-progress-card" class="card goal-progress-card"></div>
+        <h3 class="panel-title">核心資源</h3>
+        <div id="stats-grid" class="stats-grid"></div>
+      </div>
+
+      <div id="tab-week" class="tab-panel">
+        <div id="week-header" class="week-header-card card"></div>
+        <div id="urgent-banner" class="urgent-banner hidden"></div>
+        <div class="week-toolbar">
+          <span class="panel-title" style="margin:0;">本週安排</span>
+          <button id="btn-open-guide" class="btn btn-secondary btn-small">📖 行動指南</button>
+        </div>
+        <div id="location-switcher" class="location-switcher"></div>
+        <div id="action-tabs-row" class="action-tabs-row"></div>
+        <div id="action-list" class="action-list"></div>
+        <button id="btn-advance-week" class="btn btn-primary btn-full advance-week-btn">▶️ 進入下一週</button>
+      </div>
+
+      <div id="tab-people" class="tab-panel">
+        <h3 class="panel-title">已認識嘅人</h3>
+        <div id="people-list" class="people-list"></div>
+      </div>
+
+      <div id="tab-journal" class="tab-panel">
+        <h3 class="panel-title">成長記事簿</h3>
+        <div id="journal-list" class="journal-list"></div>
+      </div>
+
+      <div id="tab-settings" class="tab-panel">
+        <h3 class="panel-title">設定</h3>
+        <div class="settings-list">
+          <label class="settings-toggle-row">
+            <span>顯示詳細數值（+6 / -3 呢類完整數字）</span>
+            <input type="checkbox" id="toggle-detailed-numbers" />
+          </label>
+          <button id="btn-reselect-goal" class="btn btn-secondary btn-full">🎯 重新揀本學期心願</button>
+          <button id="btn-save" class="btn btn-secondary btn-full">💾 儲存遊戲</button>
+          <button id="btn-load" class="btn btn-secondary btn-full">📂 讀取存檔</button>
+          <button id="btn-restart" class="btn btn-danger btn-full">🔄 重新開始</button>
+        </div>
+      </div>
+
+    </main>
+
+    <!-- 浮動訊息按鈕 -->
+    <button id="btn-messages" class="floating-message-btn">
+      💬
+      <span id="message-badge" class="message-badge hidden">0</span>
+    </button>
+
+    <!-- 訊息列表 overlay -->
+    <div id="message-list-overlay" class="dialogue-overlay hidden">
+      <div class="dialogue-box">
+        <div class="modal-header-row">
+          <h3>訊息</h3>
+          <button id="btn-close-message-list" class="modal-close-btn">✕</button>
+        </div>
+        <div id="message-list-body"></div>
+      </div>
+    </div>
+
+    <!-- 對話／訊息內容 overlay -->
+    <div id="dialogue-overlay" class="dialogue-overlay hidden">
+      <div class="dialogue-box">
+        <div class="dialogue-speaker">
+          <span id="dialogue-avatar" class="avatar-emoji"></span>
+          <span id="dialogue-name" class="speaker-name"></span>
+        </div>
+        <div id="dialogue-lines" class="dialogue-lines"></div>
+        <div id="dialogue-choices" class="dialogue-choices"></div>
+      </div>
+    </div>
+
+    <!-- 行動指南 modal -->
+    <div id="guide-overlay" class="dialogue-overlay hidden">
+      <div class="dialogue-box guide-box">
+        <div class="guide-header">
+          <div class="guide-header-icon">📖</div>
+          <div>
+            <h3>行動指南</h3>
+            <p>查看所有行動嘅詳細說明</p>
+          </div>
+          <button id="btn-close-guide" class="modal-close-btn">✕</button>
+        </div>
+        <div id="guide-filter-row" class="guide-filter-row"></div>
+        <div id="guide-list" class="guide-list"></div>
+      </div>
+    </div>
+
+    <!-- 系統介紹 overlay：唔追求完美人生，都可以開特殊路線 -->
+    <div id="intro-overlay" class="dialogue-overlay hidden">
+      <div class="dialogue-box intro-box">
+        <h3>開始之前，想同你講一句</h3>
+        <p>呢個唔係一款淨係追求完美數值嘅遊戲。</p>
+        <p>你可以努力讀書，亦都可以到處玩、瞓多啲、拒絕邀請、淨係同少數人熟落。</p>
+        <p>呢啲睇落唔完美嘅選擇，可能會喺未來開出特別嘅路線。</p>
+        <p>小學至中三之前，你仍然係一個普通學生，但你嘅習慣、關係同奇怪經歷，會慢慢改變之後嘅人生。</p>
+        <button id="btn-intro-continue" class="btn btn-primary btn-full">明白喇，開始我嘅人生</button>
+      </div>
+    </div>
+
+    <!-- 本學期心願選擇 overlay -->
+    <div id="goal-select-overlay" class="dialogue-overlay hidden">
+      <div class="dialogue-box">
+        <h3>揀選本學期心願</h3>
+        <p class="modal-sub">呢個學期你想達成咩？（可以隨機抽）</p>
+        <div id="goal-select-list" class="goal-select-list"></div>
+        <button id="btn-random-goal" class="btn btn-secondary btn-full">🎲 隨機抽心願</button>
+      </div>
+    </div>
+
+    <!-- 學期回顧 overlay -->
+    <div id="term-review-overlay" class="dialogue-overlay hidden">
+      <div class="dialogue-box term-review-box">
+        <h3 id="term-review-title"></h3>
+        <div id="term-review-body"></div>
+        <button id="btn-term-review-continue" class="btn btn-primary btn-full">繼續下學期</button>
+      </div>
+    </div>
+
+    <!-- 回覆後果摘要 overlay -->
+    <div id="outcome-summary-overlay" class="dialogue-overlay hidden">
+      <div class="dialogue-box outcome-summary-box">
+        <h4>💡 呢個選擇嘅後果</h4>
+        <div id="outcome-summary-list" class="outcome-summary-list"></div>
+        <button id="btn-outcome-summary-continue" class="btn btn-primary btn-full">知道了</button>
+      </div>
+    </div>
+
+    <!-- 底部導航 -->
+    <nav class="bottom-nav">
+      <button class="nav-btn active-nav" data-tab="status"><span>🏠</span><small>狀態</small></button>
+      <button class="nav-btn" data-tab="week"><span>🗓️</span><small>本週安排</small></button>
+      <button class="nav-btn" data-tab="people"><span>👥</span><small>人物</small></button>
+      <button class="nav-btn" data-tab="journal"><span>📔</span><small>成長記事簿</small></button>
+      <button class="nav-btn" data-tab="settings"><span>⚙️</span><small>設定</small></button>
+    </nav>
+
+  </section>
+
+</div>
+
+<script type="module" src="js/main.js"></script>
+</body>
+</html>
