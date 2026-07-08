@@ -216,21 +216,37 @@ body {
   margin-bottom: 16px;
 }
 
+/* 核心資源列：固定三欄（名稱 / progress bar / 數字），數字一律 nowrap 唔會斷行 */
 .stats-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   margin-bottom: 18px;
 }
-.stat-card {
+.stat-row {
+  display: grid;
+  grid-template-columns: minmax(64px, 92px) 1fr minmax(56px, auto);
+  align-items: center;
+  gap: 10px;
   background: var(--color-card);
-  border-radius: var(--radius-md);
-  padding: 10px 8px;
-  text-align: center;
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
   box-shadow: var(--shadow-soft);
 }
-.stat-card .stat-label { font-size: 11px; color: var(--color-text-soft); }
-.stat-card .stat-value { font-size: 18px; font-weight: 800; margin: 2px 0 6px; }
+.stat-row-label {
+  font-size: 12px;
+  color: var(--color-text-soft);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.stat-row-value {
+  font-size: 14px;
+  font-weight: 800;
+  white-space: nowrap;
+  text-align: right;
+}
+.hidden { display: none !important; }
 .stat-bar { height: 6px; border-radius: 4px; background: #eee; overflow: hidden; }
 .stat-bar-fill { height: 100%; border-radius: 4px; background: var(--color-mint-dark); }
 
@@ -297,6 +313,7 @@ body {
   color: #6b5f45;
   padding: 2px 7px;
   border-radius: 999px;
+  white-space: nowrap;
 }
 .meta-chip-limited { background: #fdeceb; border-color: #f5c2bd; color: #b3453c; }
 .meta-chip-invite { background: var(--color-mint); border-color: transparent; color: #2f6b4e; }
@@ -487,6 +504,28 @@ body {
 .direction-name { font-size: 15px; font-weight: 800; color: #6a4fa0; }
 .direction-reason { font-size: 12px; color: var(--color-text-soft); margin: 4px 0 0; }
 .muted-text { color: var(--color-text-soft); font-size: 13px; }
+.calm-week-note { color: var(--color-text-soft); font-size: 12px; margin: 8px 0 0; font-style: italic; }
+
+/* ===== 內容編輯器 ===== */
+.content-editor-box { max-height: 90%; display: flex; flex-direction: column; }
+.content-editor-textarea {
+  width: 100%;
+  min-height: 260px;
+  flex: 1;
+  font-family: "SFMono-Regular", Consolas, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  border: 1px solid #e5ded0;
+  border-radius: var(--radius-sm);
+  padding: 10px;
+  background: var(--color-cream);
+  color: #3a3226;
+  resize: vertical;
+  margin: 10px 0;
+}
+.content-editor-warnings { margin-top: 8px; font-size: 12px; }
+.content-editor-warning-line { color: #b3453c; background: #fdeceb; border-radius: 6px; padding: 5px 9px; margin-bottom: 4px; }
+.content-editor-ok-line { color: #2f6b4e; background: var(--color-mint); border-radius: 6px; padding: 5px 9px; }
 
 /* ===== 本週安排頁 ===== */
 .week-header-card { background: linear-gradient(135deg, var(--color-blue), var(--color-mint)); }
@@ -510,6 +549,89 @@ body {
   margin-bottom: 14px;
 }
 .urgent-banner.hidden { display: none; }
+
+/* ===== 強制補課 banner ===== */
+.forced-schedule-banner {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.forced-schedule-banner.hidden { display: none; }
+.forced-schedule-row {
+  background: #fff6e5;
+  border: 1.5px solid #f0d9a8;
+  border-radius: var(--radius-md);
+  padding: 10px 14px;
+  font-size: 13px;
+  color: #7a5a1e;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* ===== 最重要目標（dashboard） ===== */
+.urgent-goals-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
+.urgent-goal-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--color-card);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  box-shadow: var(--shadow-soft);
+  font-size: 13px;
+}
+.urgent-goal-name { font-weight: 700; flex: 1; }
+
+/* ===== 目標頁 modal（分類詳情） ===== */
+.goal-detail-card {
+  background: var(--color-card);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+  box-shadow: var(--shadow-soft);
+  margin-bottom: 10px;
+}
+.goal-detail-name { font-weight: 700; font-size: 14px; margin-bottom: 4px; }
+.goal-detail-desc { font-size: 12px; color: var(--color-text-soft); margin-bottom: 6px; }
+.goal-abandon-btn { margin-top: 8px; }
+
+.report-explain-toggle { margin: 6px 0 10px; font-size: 12px; }
+.report-explain-toggle summary { cursor: pointer; color: var(--color-text-soft); }
+.report-explain-text { margin-top: 6px; color: var(--color-text-soft); line-height: 1.5; }
+.goal-detail-reward { font-size: 12px; color: #2f6b4e; margin-top: 2px; }
+.goal-section-title { font-size: 11px; font-weight: 700; color: var(--color-text-soft); margin: 10px 0 2px; text-transform: none; }
+.goal-detail-noharm { font-size: 11px; color: var(--color-text-soft); margin-top: 6px; font-style: italic; }
+
+.goals-tabs-row { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 8px; margin-bottom: 10px; }
+.goals-tab-chip { flex-shrink: 0; white-space: nowrap; font-size: 12px; padding: 6px 12px; }
+
+.goal-checklist-list { display: flex; flex-direction: column; gap: 4px; margin: 8px 0; }
+.goal-checklist-row { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.goal-checklist-check { font-size: 14px; flex-shrink: 0; }
+.goal-checklist-label { flex: 1; min-width: 0; }
+.goal-checklist-value { color: var(--color-text-soft); white-space: nowrap; flex-shrink: 0; }
+
+/* ===== 興趣班管理 modal 按鈕 ===== */
+.hobby-quit-btn, .hobby-join-btn { margin-top: 8px; }
+
+/* ===== 比賽／機會資格提示 ===== */
+.opp-not-qualified {
+  font-size: 12px;
+  color: #b3453c;
+  background: #fdeceb;
+  border-radius: var(--radius-sm, 8px);
+  padding: 6px 10px;
+  margin-top: 6px;
+}
+.opp-reminder {
+  font-size: 12px;
+  color: #2f6b4e;
+  background: var(--color-mint);
+  border-radius: var(--radius-sm, 8px);
+  padding: 6px 10px;
+  margin-top: 6px;
+}
 
 .week-toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
 .btn-small { padding: 8px 12px; font-size: 12px; }
@@ -670,6 +792,18 @@ body {
 .term-review-box li { margin-bottom: 3px; }
 .term-review-goal { font-weight: 700; font-size: 14px; margin: 0 0 4px; }
 
+/* ===== 人生片段回顧 ===== */
+.story-scene-box { max-height: 88%; }
+.story-scene-heading { font-size: 12px; color: var(--color-text-soft); margin: 2px 0 8px; }
+.story-characters { font-size: 12px; color: var(--color-text-soft); margin: 0 0 10px; }
+.story-narration { font-size: 13px; line-height: 1.6; color: #4a4238; margin: 0 0 8px; font-style: italic; }
+.story-dialogue-block { margin: 10px 0; padding: 10px 12px; background: var(--color-cream); border-radius: var(--radius-sm); }
+.story-dialogue-line { font-size: 13px; line-height: 1.7; margin: 0 0 6px; }
+.story-dialogue-line:last-child { margin-bottom: 0; }
+.story-speaker { font-weight: 700; color: #2f4d3e; }
+.story-result { font-size: 13px; line-height: 1.6; }
+.story-effects-list { margin: 0; padding-left: 18px; font-size: 12px; color: var(--color-text-soft); }
+
 /* ===== 回覆後果摘要 ===== */
 .outcome-summary-box h4 { margin-top: 0; color: #2f4d3e; }
 .outcome-summary-list { display: flex; flex-direction: column; gap: 6px; margin: 12px 0 16px; }
@@ -688,9 +822,9 @@ body {
 /* ===== 本學期心願子目標 ===== */
 .subgoal-list { display: flex; flex-direction: column; gap: 8px; margin: 10px 0; }
 .subgoal-row { display: flex; align-items: center; gap: 8px; }
-.subgoal-label { font-size: 11px; color: var(--color-text-soft); width: 78px; flex-shrink: 0; }
-.subgoal-row .stat-bar { flex: 1; }
-.subgoal-value { font-size: 11px; font-weight: 700; width: 48px; text-align: right; flex-shrink: 0; }
+.subgoal-label { font-size: 11px; color: var(--color-text-soft); width: 78px; flex-shrink: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.subgoal-row .stat-bar { flex: 1; min-width: 0; }
+.subgoal-value { font-size: 11px; font-weight: 700; min-width: 56px; text-align: right; flex-shrink: 0; white-space: nowrap; }
 .goal-hint-text { font-size: 11px; color: #b3752f; margin: 4px 0 0; }
 
 /* ===== 學期回顧擴充 ===== */

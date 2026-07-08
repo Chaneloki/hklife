@@ -24,12 +24,25 @@
   <section id="screen-setup" class="screen">
     <header class="setup-header">
       <h2>開局設定</h2>
-      <p>揀返屬於你嘅出身，或者隨機抽一個人生</p>
+      <p>人生重開，命運自有安排。你只可以決定名字，同想唔想自己揀家庭同地區。</p>
     </header>
     <div class="setup-body" id="setup-body"></div>
     <div class="setup-footer">
-      <button id="btn-random-life" class="btn btn-secondary">🎲 隨機抽人生</button>
-      <button id="btn-confirm-setup" class="btn btn-primary">確認並開始</button>
+      <button id="btn-random-life" class="btn btn-secondary">🎲 完全隨機人生</button>
+      <button id="btn-confirm-setup" class="btn btn-primary">生成呢段人生</button>
+    </div>
+  </section>
+
+  <!-- ===== 人生起點報告 ===== -->
+  <section id="screen-report" class="screen">
+    <header class="setup-header">
+      <h2>人生起點報告</h2>
+      <p>呢個係你今次人生嘅初始狀態，唔可以逐項重揀，但可以重抽一次。</p>
+    </header>
+    <div class="setup-body" id="report-body"></div>
+    <div class="setup-footer">
+      <button id="btn-reroll-life" class="btn btn-secondary">🔄 重抽人生</button>
+      <button id="btn-begin-life" class="btn btn-primary">開始呢段人生</button>
     </div>
   </section>
 
@@ -45,6 +58,11 @@
       <div id="tab-status" class="tab-panel active-tab">
         <div id="character-card" class="card character-card"></div>
         <div id="goal-progress-card" class="card goal-progress-card"></div>
+        <div class="week-toolbar">
+          <span class="panel-title" style="margin:0;">最重要嘅目標</span>
+          <button id="btn-open-goals" class="btn btn-secondary btn-small">🎯 全部目標</button>
+        </div>
+        <div id="urgent-goals-list" class="urgent-goals-list"></div>
         <h3 class="panel-title">核心資源</h3>
         <div id="stats-grid" class="stats-grid"></div>
       </div>
@@ -52,8 +70,10 @@
       <div id="tab-week" class="tab-panel">
         <div id="week-header" class="week-header-card card"></div>
         <div id="urgent-banner" class="urgent-banner hidden"></div>
+        <div id="forced-schedule-banner" class="forced-schedule-banner hidden"></div>
         <div class="week-toolbar">
           <span class="panel-title" style="margin:0;">本週安排</span>
+          <button id="btn-open-hobbies" class="btn btn-secondary btn-small">🎨 興趣班</button>
           <button id="btn-open-guide" class="btn btn-secondary btn-small">📖 行動指南</button>
         </div>
         <div id="location-switcher" class="location-switcher"></div>
@@ -82,11 +102,31 @@
           <button id="btn-reselect-goal" class="btn btn-secondary btn-full">🎯 重新揀本學期心願</button>
           <button id="btn-save" class="btn btn-secondary btn-full">💾 儲存遊戲</button>
           <button id="btn-load" class="btn btn-secondary btn-full">📂 讀取存檔</button>
+          <button id="btn-open-content-editor" class="btn btn-secondary btn-full">🛠️ 內容編輯器</button>
           <button id="btn-restart" class="btn btn-danger btn-full">🔄 重新開始</button>
         </div>
       </div>
 
     </main>
+
+    <!-- 內容編輯器 modal（俾作者手動輸入正式內容用，唔屬於遊戲內容本身） -->
+    <div id="content-editor-overlay" class="dialogue-overlay hidden">
+      <div class="dialogue-box guide-box content-editor-box">
+        <div class="modal-header-row">
+          <h3>🛠️ 內容編輯器</h3>
+          <button id="btn-close-content-editor" class="modal-close-btn">✕</button>
+        </div>
+        <p class="modal-sub">呢個工具幫你填資料、檢查格式、複製 JS object 貼入對應 data 檔。唔會直接寫入檔案。</p>
+        <div id="content-editor-type-tabs" class="goals-tabs-row"></div>
+        <textarea id="content-editor-textarea" class="content-editor-textarea" spellcheck="false"></textarea>
+        <div class="action-meta-row">
+          <button id="btn-content-editor-validate" class="btn btn-secondary btn-small">✅ 檢查格式</button>
+          <button id="btn-content-editor-copy" class="btn btn-secondary btn-small">📋 複製資料</button>
+          <button id="btn-content-editor-reset" class="btn btn-secondary btn-small">🔄 重置為空白模板</button>
+        </div>
+        <div id="content-editor-warnings" class="content-editor-warnings"></div>
+      </div>
+    </div>
 
     <!-- 浮動訊息按鈕 -->
     <button id="btn-messages" class="floating-message-btn">
@@ -170,6 +210,48 @@
         <h4>💡 呢個選擇嘅後果</h4>
         <div id="outcome-summary-list" class="outcome-summary-list"></div>
         <button id="btn-outcome-summary-continue" class="btn btn-primary btn-full">知道了</button>
+      </div>
+    </div>
+
+    <!-- 目標頁 modal -->
+    <div id="goals-overlay" class="dialogue-overlay hidden">
+      <div class="dialogue-box guide-box">
+        <div class="modal-header-row">
+          <h3>🎯 目標</h3>
+          <button id="btn-close-goals" class="modal-close-btn">✕</button>
+        </div>
+        <div id="goals-tabs" class="goals-tabs-row"></div>
+        <div id="goals-body"></div>
+      </div>
+    </div>
+
+    <!-- 興趣班管理 modal -->
+    <div id="hobbies-overlay" class="dialogue-overlay hidden">
+      <div class="dialogue-box guide-box">
+        <div class="modal-header-row">
+          <h3>🎨 興趣班</h3>
+          <button id="btn-close-hobbies" class="modal-close-btn">✕</button>
+        </div>
+        <p class="modal-sub">最多同時參加 3 個興趣班，放棄之後一段長時間內唔可以再揀返同一個。</p>
+        <div id="hobbies-body"></div>
+      </div>
+    </div>
+
+    <!-- 成績表 overlay -->
+    <div id="report-card-overlay" class="dialogue-overlay hidden">
+      <div class="dialogue-box term-review-box">
+        <h3>📋 成績表</h3>
+        <div id="report-card-body"></div>
+        <button id="btn-report-card-continue" class="btn btn-primary btn-full">知道了</button>
+      </div>
+    </div>
+
+    <!-- 人生片段回顧 overlay -->
+    <div id="story-scene-overlay" class="dialogue-overlay hidden">
+      <div class="dialogue-box term-review-box story-scene-box">
+        <h3 id="story-scene-title">📖 人生片段回顧</h3>
+        <div id="story-scene-body"></div>
+        <button id="btn-story-scene-continue" class="btn btn-primary btn-full">合上這一頁</button>
       </div>
     </div>
 

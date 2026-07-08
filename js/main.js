@@ -1,27 +1,38 @@
 // js/main.js
 // 只負責初始化、事件綁定，實際邏輯交俾 engine.js，畫面交俾 ui.js
 
-import { state, resetState, clampStat } from "./state.js";
-import { saveGame, loadGame, hasSavedGame, resetGame as clearSavedGame } from "./storage.js";
+import { state, resetState } from "./state.js";
+import { saveGame, loadGame, hasSavedGame, resetGame as clearSavedGame, hasStaleOldSave } from "./storage.js";
 import {
   executeAction, chooseDialogueOption, triggerDialogue,
   chooseMessageOption, advanceWeek, selectTermGoal,
   setBackgroundTagsCache, captureTermStartSnapshot,
   incrementLocationFamiliarity, applyLocationRelationshipInfluence,
-  checkLifeDirection, allowSkipMessageWithConsequence, resolvePopupChoice
+  checkLifeDirection, allowSkipMessageWithConsequence, resolvePopupChoice,
+  generateStartingCaps, generateStartingPotentialReport, applyResourceChangeWithCap,
+  joinHobby, quitHobby, joinOpportunity, declineOpportunity, negotiateForcedSchedule,
+  getGoalsByCategory, getUrgentGoals, abandonGoal,
+  checkOpportunityEntryRequirements, getOpportunityMissingRequirements, getOverqualifiedOpportunityReminders,
+  cancelScheduleItem, negotiateScheduleItem
 } from "./engine.js";
 import * as UI from "./ui.js";
 import { getAllBackgroundCategories, pickRandom } from "../data/backgrounds.js";
 import { termGoals } from "../data/goals.js";
 import { getMessageById } from "../data/messages.js";
+import { hobbies } from "../data/hobbies.js";
+import { getCompetitionById } from "../data/opportunities.js";
+import { generateCharacters } from "../data/characters.js";
+import { validateContentData, validateSingleEntry, CONTENT_TYPES } from "../data/contentValidation.js";
+import { BLANK_TEMPLATES } from "../data/contentSchemaExamples.js";
+
+const RANDOM_NAMES = ["阿晴", "阿朗", "家豪", "曉澄", "子軒", "詠詩", "俊熙", "苡蓁"];
 
 let selection = {
   playerName: "",
+  familyMode: "random",
   family: null,
-  region: null,
-  personality: null,
-  talent: null,
-  interest: null
+  regionMode: "random",
+  region: null
 };
 
 const locationByRegion = {
@@ -33,62 +44,60 @@ const locationByRegion = {
 // ---------- 開局設定 ----------
 function refreshSetupScreen() {
   UI.renderSetupScreen(selection, (key, value) => {
-    if (key === "playerName") {
-      selection.playerName = value;
-    } else {
-      selection[key] = value;
-      refreshSetupScreen();
-    }
+    selection[key] = value;
+    refreshSetupScreen();
   });
 }
 
-function randomizeSelection() {
-  const categories = getAllBackgroundCategories();
-  selection = {
-    playerName: selection.playerName || "阿仔",
-    family: pickRandom(categories.family).id,
-    region: pickRandom(categories.region).id,
-    personality: pickRandom(categories.personality).id,
-    talent: pickRandom(categories.talent).id,
-    interest: pickRandom(categories.interest).id
-  };
-  refreshSetupScreen();
+function randomizeSelectionAndBegin() {
+  selection = { playerName: selection.playerName, familyMode: "random", family: null, regionMode: "random", region: null };
+  applyBackgroundToState();
+  UI.showScreen("screen-report");
+  UI.renderStartingReport(state);
 }
 
 function applyBackgroundToState() {
   const categories = getAllBackgroundCategories();
-  const chosen = [];
-  Object.entries(categories).forEach(([key, list]) => {
-    const found = list.find(o => o.id === selection[key]);
-    if (found) chosen.push(found);
-  });
+
+  const familyOpt = selection.familyMode === "choose" && selection.family
+    ? categories.family.find(o => o.id === selection.family)
+    : pickRandom(categories.family);
+  const regionOpt = selection.regionMode === "choose" && selection.region
+    ? categories.region.find(o => o.id === selection.region)
+    : pickRandom(categories.region);
+  const personalityOpt = pickRandom(categories.personality);
+  const talentOpt = pickRandom(categories.talent);
+  const interestOpt = pickRandom(categories.interest);
+  const chosen = [familyOpt, regionOpt, personalityOpt, talentOpt, interestOpt];
 
   resetState();
-  state.playerName = selection.playerName || "無名氏";
+  state.playerName = selection.playerName?.trim() || pickRandom(RANDOM_NAMES);
   state.background = {
-    familyId: selection.family,
-    regionId: selection.region,
-    personalityId: selection.personality,
-    talentId: selection.talent,
-    interestId: selection.interest
+    familyId: familyOpt.id,
+    regionId: regionOpt.id,
+    personalityId: personalityOpt.id,
+    talentId: talentOpt.id,
+    interestId: interestOpt.id
   };
 
-  const statSums = {};
-  const statCounts = {};
+  // 生成呢一世嘅具體角色（媽媽、爸爸、班主任、同學……嘅名同人格），每次新人生都唔一樣
+  generateCharacters(state);
+
+  // 核心資源上限系統：先隨機決定總資源池同分配，再用家庭／地區背景做輕微調整（唔會完全決定命運）
+  generateStartingCaps(state);
   chosen.forEach(opt => {
     Object.entries(opt.startingStats || {}).forEach(([stat, val]) => {
-      statSums[stat] = (statSums[stat] || 0) + val;
-      statCounts[stat] = (statCounts[stat] || 0) + 1;
+      if (state.stats[stat] === undefined) return;
+      const nudge = (val - 50) * 0.3;
+      applyResourceChangeWithCap(stat, nudge, state);
     });
   });
-  Object.keys(statSums).forEach(stat => {
-    state.stats[stat] = clampStat(Math.round(statSums[stat] / statCounts[stat]));
-  });
+  generateStartingPotentialReport(state);
 
   const tags = chosen.flatMap(opt => opt.tags || []);
   setBackgroundTagsCache(state, tags);
 
-  state.locationId = locationByRegion[selection.region] || "loc_shatin";
+  state.locationId = locationByRegion[regionOpt.id] || "loc_shatin";
   state.unlockedLocations = Array.from(new Set([state.locationId, "loc_shatin"]));
 
   captureTermStartSnapshot(state);
@@ -100,10 +109,22 @@ function renderGame() {
   UI.renderAll(state, {
     onChooseAction: handleChooseAction,
     onSelectLocation: handleSelectLocation,
-    onRefreshActions: refreshActionListOnly
+    onRefreshActions: refreshActionListOnly,
+    urgentGoals: getUrgentGoals(state),
+    onNegotiateForcedSchedule: handleNegotiateForcedSchedule
   });
   const detailedToggle = document.getElementById("toggle-detailed-numbers");
   if (detailedToggle) detailedToggle.checked = !!state.showDetailedNumbers;
+}
+
+function handleNegotiateForcedSchedule(forcedId) {
+  const result = negotiateForcedSchedule(forcedId, state);
+  if (!result.ok) {
+    alert(result.reason || "暫時傾唔掂。");
+    return;
+  }
+  renderGame();
+  autosave();
 }
 
 function refreshActionListOnly() {
@@ -203,23 +224,47 @@ function refreshMessageList() {
 
 // ---------- 週推進 ----------
 function handleAdvanceWeek() {
+  const priorReportCardCount = state.reportCards.length;
+  const priorStoryCount = state.sixWeekStoryHistory.length;
   const result = advanceWeek(state);
   if (result.blocked) {
     alert(result.reason);
     return;
   }
   autosave();
+
+  const showNewStorySceneIfAny = (next) => {
+    if (state.sixWeekStoryHistory.length > priorStoryCount) {
+      UI.showStoryScene(state.sixWeekStoryHistory[state.sixWeekStoryHistory.length - 1], next);
+    } else if (result.storyCheckDue) {
+      alert("這 6 週沒有可回顧的人生片段。");
+      next();
+    } else {
+      next();
+    }
+  };
+
+  const showNewReportCardIfAny = (next) => {
+    if (state.reportCards.length > priorReportCardCount) {
+      UI.showReportCard(state.reportCards[state.reportCards.length - 1], () => showNewStorySceneIfAny(next));
+    } else {
+      showNewStorySceneIfAny(next);
+    }
+  };
+
   if (result.termEnded) {
-    UI.showTermReview(result.termReview, () => {
-      renderGame();
-      if (!result.finished) {
-        openGoalSelect();
-      } else {
-        alert("你已經完成咗目前設計嘅所有學期，敬請期待未來更新！");
-      }
+    showNewReportCardIfAny(() => {
+      UI.showTermReview(result.termReview, () => {
+        renderGame();
+        if (!result.finished) {
+          openGoalSelect();
+        } else {
+          alert("你已經完成咗目前設計嘅所有學期，敬請期待未來更新！");
+        }
+      });
     });
   } else {
-    renderGame();
+    showNewReportCardIfAny(() => renderGame());
   }
 }
 
@@ -239,10 +284,14 @@ function autosave() {
 // ---------- 事件綁定 ----------
 function bindStartScreen() {
   document.getElementById("btn-new-game").addEventListener("click", () => {
-    selection = { playerName: "", family: null, region: null, personality: null, talent: null, interest: null };
+    selection = { playerName: "", familyMode: "random", family: null, regionMode: "random", region: null };
     refreshSetupScreen();
     UI.showScreen("screen-setup");
   });
+
+  if (hasStaleOldSave()) {
+    alert("資料版本已更新，舊存檔包含已移除的事件內容，請開始新人生。");
+  }
 
   if (hasSavedGame()) {
     const btn = document.getElementById("btn-continue-game");
@@ -253,32 +302,43 @@ function bindStartScreen() {
         Object.assign(state, loaded);
         UI.showScreen("screen-game");
         renderGame();
+      } else {
+        alert("資料版本已更新，舊存檔包含已移除的事件內容，請開始新人生。");
       }
     });
   }
 }
 
 function bindSetupScreen() {
-  document.getElementById("btn-random-life").addEventListener("click", randomizeSelection);
+  document.getElementById("btn-random-life").addEventListener("click", randomizeSelectionAndBegin);
   document.getElementById("btn-confirm-setup").addEventListener("click", () => {
-    if (!selection.family || !selection.region || !selection.personality || !selection.talent || !selection.interest) {
-      alert("請揀晒所有選項，或者撳「隨機抽人生」啦！");
-      return;
-    }
     applyBackgroundToState();
-    UI.showScreen("screen-game");
-    renderGame();
-    autosave();
-    if (!state.seenIntros.includes("intro_no_perfect_life")) {
-      state.seenIntros.push("intro_no_perfect_life");
-      UI.showIntroOverlay(() => {
-        autosave();
-        openGoalSelect();
-      });
-    } else {
-      openGoalSelect();
-    }
+    UI.showScreen("screen-report");
+    UI.renderStartingReport(state);
   });
+}
+
+function bindReportScreen() {
+  document.getElementById("btn-reroll-life").addEventListener("click", () => {
+    applyBackgroundToState();
+    UI.renderStartingReport(state);
+  });
+  document.getElementById("btn-begin-life").addEventListener("click", beginGameFromReport);
+}
+
+function beginGameFromReport() {
+  UI.showScreen("screen-game");
+  renderGame();
+  autosave();
+  if (!state.seenIntros.includes("intro_no_perfect_life")) {
+    state.seenIntros.push("intro_no_perfect_life");
+    UI.showIntroOverlay(() => {
+      autosave();
+      openGoalSelect();
+    });
+  } else {
+    openGoalSelect();
+  }
 }
 
 function bindBottomNav() {
@@ -302,6 +362,89 @@ function bindGuideModal() {
 
 function bindWeekActions() {
   document.getElementById("btn-advance-week").addEventListener("click", handleAdvanceWeek);
+}
+
+function bindGoalsModal() {
+  document.getElementById("btn-open-goals").addEventListener("click", () => {
+    refreshGoalsModal();
+    UI.showGoalsOverlay();
+  });
+  document.getElementById("btn-close-goals").addEventListener("click", () => UI.hideGoalsOverlay());
+}
+
+function refreshGoalsModal() {
+  UI.showGoalsModal(state, getGoalsByCategory(state), {
+    onAbandon: handleAbandonGoal,
+    onCancelSchedule: (id) => {
+      cancelScheduleItem(id, state);
+      refreshGoalsModal();
+      renderGame();
+      autosave();
+    },
+    onNegotiateSchedule: (id) => {
+      const result = negotiateScheduleItem(id, state);
+      if (!result.ok) alert(result.reason);
+      refreshGoalsModal();
+      renderGame();
+      autosave();
+    }
+  });
+}
+
+function handleAbandonGoal(category, goalId) {
+  if (!confirm("確定要放棄呢個目標？放棄唔一定係壞事，但可能會影響相關關係或機會。")) return;
+  abandonGoal(category, goalId, state);
+  refreshGoalsModal();
+  renderGame();
+  autosave();
+}
+
+function bindHobbiesModal() {
+  document.getElementById("btn-open-hobbies").addEventListener("click", () => {
+    refreshHobbiesModal();
+    UI.showHobbiesOverlay();
+  });
+  document.getElementById("btn-close-hobbies").addEventListener("click", () => UI.hideHobbiesOverlay());
+}
+
+function refreshHobbiesModal() {
+  const knownComps = state.knownOpportunities.map(getCompetitionById).filter(Boolean);
+  const qualification = {};
+  knownComps.forEach(c => {
+    qualification[c.id] = {
+      qualified: checkOpportunityEntryRequirements(c.id, state),
+      missing: getOpportunityMissingRequirements(c.id, state)
+    };
+  });
+  const overqualifiedReminders = getOverqualifiedOpportunityReminders(state);
+  UI.showHobbiesModal(state, hobbies, knownComps, {
+    onJoin: (hobbyId) => {
+      const result = joinHobby(hobbyId, state);
+      if (!result.ok) alert(result.reason);
+      refreshHobbiesModal();
+      renderGame();
+      autosave();
+    },
+    onQuit: (hobbyId) => {
+      if (!confirm("確定要放棄呢個興趣班？")) return;
+      quitHobby(hobbyId, state);
+      refreshHobbiesModal();
+      renderGame();
+      autosave();
+    },
+    onOppJoin: (compId) => {
+      const result = joinOpportunity(compId, state);
+      if (!result.ok) alert(result.reason);
+      refreshHobbiesModal();
+      renderGame();
+      autosave();
+    },
+    onOppDecline: (compId) => {
+      declineOpportunity(compId, state);
+      refreshHobbiesModal();
+      autosave();
+    }
+  }, qualification, overqualifiedReminders);
 }
 
 function bindGoalSelectScreen() {
@@ -345,15 +488,90 @@ function bindSettingsScreen() {
   });
 }
 
+// ---------- 內容編輯器：純前端小工具，幫作者填模板、check 格式、複製資料，唔屬於遊戲存檔 ----------
+const CONTENT_EDITOR_DRAFTS_KEY = "contentEditorDrafts";
+let currentContentEditorType = CONTENT_TYPES[0];
+
+function loadContentEditorDrafts() {
+  try {
+    return JSON.parse(localStorage.getItem(CONTENT_EDITOR_DRAFTS_KEY) || "{}");
+  } catch (e) {
+    return {};
+  }
+}
+
+function saveContentEditorDraft(type, text) {
+  const drafts = loadContentEditorDrafts();
+  drafts[type] = text;
+  localStorage.setItem(CONTENT_EDITOR_DRAFTS_KEY, JSON.stringify(drafts));
+}
+
+function refreshContentEditor() {
+  UI.renderContentEditorTabs(CONTENT_TYPES, currentContentEditorType, (type) => {
+    saveContentEditorDraft(currentContentEditorType, UI.getContentEditorText());
+    currentContentEditorType = type;
+    refreshContentEditor();
+  });
+  const drafts = loadContentEditorDrafts();
+  const text = drafts[currentContentEditorType] || JSON.stringify(BLANK_TEMPLATES[currentContentEditorType], null, 2);
+  UI.setContentEditorText(text);
+  UI.renderContentEditorWarnings(null);
+}
+
+function bindContentEditor() {
+  document.getElementById("btn-open-content-editor").addEventListener("click", () => {
+    refreshContentEditor();
+    UI.showContentEditorOverlay();
+  });
+  document.getElementById("btn-close-content-editor").addEventListener("click", () => {
+    saveContentEditorDraft(currentContentEditorType, UI.getContentEditorText());
+    UI.hideContentEditorOverlay();
+  });
+  document.getElementById("btn-content-editor-validate").addEventListener("click", () => {
+    const text = UI.getContentEditorText();
+    saveContentEditorDraft(currentContentEditorType, text);
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch (e) {
+      UI.renderContentEditorWarnings([`JSON 格式錯誤，檢查唔到：${e.message}`]);
+      return;
+    }
+    UI.renderContentEditorWarnings(validateSingleEntry(currentContentEditorType, data));
+  });
+  document.getElementById("btn-content-editor-copy").addEventListener("click", async () => {
+    const text = UI.getContentEditorText();
+    saveContentEditorDraft(currentContentEditorType, text);
+    try {
+      await navigator.clipboard.writeText(text);
+      alert("已經複製到clipboard，可以貼入對應嘅 data 檔。");
+    } catch (e) {
+      alert("複製失敗，請手動選取文字複製。");
+    }
+  });
+  document.getElementById("btn-content-editor-reset").addEventListener("click", () => {
+    if (!confirm("確定要重置做空白模板？呢個 type 嘅草稿會被覆蓋。")) return;
+    const text = JSON.stringify(BLANK_TEMPLATES[currentContentEditorType], null, 2);
+    UI.setContentEditorText(text);
+    saveContentEditorDraft(currentContentEditorType, text);
+    UI.renderContentEditorWarnings(null);
+  });
+}
+
 function init() {
   bindStartScreen();
   bindSetupScreen();
+  bindReportScreen();
   bindBottomNav();
   bindMessageButton();
   bindGuideModal();
   bindWeekActions();
+  bindGoalsModal();
+  bindHobbiesModal();
   bindGoalSelectScreen();
   bindSettingsScreen();
+  bindContentEditor();
+  validateContentData();
 }
 
 document.addEventListener("DOMContentLoaded", init);

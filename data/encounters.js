@@ -1,421 +1,57 @@
 // data/encounters.js
-// 隨機 encounter pool：唔係「一定撞到邊個」，而係根據地區、週數、行動分類、權重隨機揀一個
-// 第一次撞到某個 NPC 會自動加入人物頁（透過 engine.meetCharacter），關係由「剛認識」開始
+// 隨機 encounter pool（地區「彈出」互動）：唔係「一定撞到邊個」，而係根據地區、週數、行動分類、權重隨機揀一個。
+// 第一次撞到某個 NPC 會自動加入人物頁（透過 engine.meetCharacter），關係由「剛認識」開始。
+//
+// 本檔案目前冇正式內容——所有地區遭遇由作者手動輸入，engine 唔會自動生成任何劇情、台詞或選項。
+// 請參考 /data/contentSchemaExamples.js 嘅格式範例，或下面 SAMPLE_ENCOUNTER（isSample: true，唔會載入遊戲）。
 //
 // encounter schema:
 // {
-//   id, locationId, possibleCharacters: [characterId],
+//   id, enabled, locationId, possibleCharacters: [characterId（characterSlots 嘅 slot id）],
 //   weight, conditions: [condition], weekRange: [min, max] | null,
 //   stageRange: [stageId...] | null, relatedActionCategory: category | null,
+//   title（popup 標題，可選）, introLines（彈出時嘅開場句，可選）,
+//   choices: [choice]（可選——冇 choices 就淨係 silentLog，唔開對話）,
 //   resultMessageId: messageId | null, resultDialogueId: dialogueId | null,
 //   relationshipEffects: [{characterId, dimension, amount}],
 //   locationFamiliarityEffects: number,
 //   routeSeedEffects: [{seedId, amount}],
 //   cooldownWeeks, onceOnly,
+//   storySceneId（可選，對應 /data/storyScenes.js）,
 //   silentLog: { type, title, body, tags } | null   // 唔一定要開對話，都可以淨係寫入記事簿
 // }
+//
+// choice schema: { text, attitudeTag, effects, relationshipEffects, addMemory, setFlags,
+//   routeSeedEffects, locationFamiliarityEffects, addReviewLog }
 
-export const encounters = [
-  // ===== 沙田 =====
-  {
-    id: "enc_shatin_li_ming_playground",
-    locationId: "loc_shatin",
-    possibleCharacters: ["char_classmate"],
-    weight: 5,
-    conditions: [],
-    weekRange: null,
-    relatedActionCategory: "朋友",
-    resultMessageId: null,
-    resultDialogueId: null,
-    relationshipEffects: [{ characterId: "char_classmate", dimension: "closeness", amount: 2 }],
-    locationFamiliarityEffects: 1,
-    routeSeedEffects: [{ seedId: "friendshipSeed", amount: 1 }],
-    cooldownWeeks: 1,
-    onceOnly: false,
-    silentLog: { type: "朋友", title: "喺屋苑平台撞到李明", body: "你哋喺樓下平台傾咗幾句，冇乜特別，但都幾自然。", tags: ["李明親近度+2"] }
-  },
-  {
-    id: "enc_shatin_mom_shopping",
-    locationId: "loc_shatin",
-    possibleCharacters: ["char_mom"],
-    weight: 4,
-    conditions: [],
-    weekRange: null,
-    relatedActionCategory: "家庭",
-    resultMessageId: null,
-    resultDialogueId: null,
-    relationshipEffects: [{ characterId: "char_mom", dimension: "closeness", amount: 2 }],
-    locationFamiliarityEffects: 1,
-    routeSeedEffects: [{ seedId: "familySeed", amount: 1 }],
-    cooldownWeeks: 1,
-    onceOnly: false,
-    silentLog: { type: "家庭", title: "喺商場撞到媽媽", body: "媽媽啱啱買緊嘢，見到你都幾開心，傾咗幾句就各自忙。", tags: ["媽媽親近度+2"] }
-  },
-  {
-    id: "enc_shatin_teacher_corridor",
-    locationId: "loc_shatin",
-    possibleCharacters: ["char_teacher"],
-    weight: 3,
-    conditions: [],
-    weekRange: null,
-    relatedActionCategory: "學習",
-    resultMessageId: null,
-    resultDialogueId: null,
-    relationshipEffects: [{ characterId: "char_teacher", dimension: "respect", amount: 1 }],
-    locationFamiliarityEffects: 1,
-    routeSeedEffects: [{ seedId: "academicSeed", amount: 1 }],
-    cooldownWeeks: 2,
-    onceOnly: false,
-    silentLog: null
-  },
-  {
-    id: "enc_shatin_estate_kids",
-    locationId: "loc_shatin",
-    possibleCharacters: ["char_classmate"],
-    weight: 3,
-    conditions: [],
-    weekRange: null,
-    relatedActionCategory: "探索",
-    resultMessageId: null,
-    resultDialogueId: null,
-    relationshipEffects: [],
-    locationFamiliarityEffects: 0,
-    routeSeedEffects: [],
-    cooldownWeeks: 2,
-    onceOnly: false,
-    silentLog: null,
-    introLines: ["屋苑樓下平台有班小朋友玩緊一個你未見過嘅遊戲。"],
-    choices: [
-      {
-        text: "上前問可唔可以一齊玩。",
-        tone: "熱情接受",
-        attitudeTag: "acceptWarmly",
-        visibleToneLabel: "主動上前加入",
-        effects: [{ type: "statChange", stat: "快樂", amount: 3 }, { type: "statChange", stat: "體力", amount: -1 }],
-        relationshipEffects: [{ characterId: "char_classmate", dimension: "closeness", amount: 2 }],
-        addMemory: [],
-        setFlags: [],
-        routeSeedEffects: [{ seedId: "friendshipSeed", amount: 1 }],
-        locationFamiliarityEffects: 1,
-        addReviewLog: { type: "朋友", title: "你加入咗屋苑小朋友嘅遊戲", body: "玩咗一陣冇玩過嘅遊戲，識咗新玩法。", tags: [] },
-        delayedConsequences: []
-      },
-      {
-        text: "喺旁邊睇下佢哋點玩。",
-        tone: "先觀察",
-        attitudeTag: "observeFirst",
-        visibleToneLabel: "先睇下佢哋點玩",
-        effects: [],
-        relationshipEffects: [],
-        addMemory: [],
-        setFlags: [],
-        routeSeedEffects: [{ seedId: "explorationSeed", amount: 1 }],
-        locationFamiliarityEffects: 1,
-        addReviewLog: { type: "支線", title: "你喺旁邊觀察緊", body: "你冇加入，但都幾投入咁睇緊。", tags: [] },
-        delayedConsequences: []
-      },
-      {
-        text: "行過就算。",
-        tone: "沉默",
-        attitudeTag: "staySilent",
-        visibleToneLabel: "冇特別理會",
-        effects: [],
-        relationshipEffects: [],
-        addMemory: [],
-        setFlags: [],
-        routeSeedEffects: [{ seedId: "dreamSeed", amount: 1 }],
-        locationFamiliarityEffects: 0,
-        addReviewLog: null,
-        delayedConsequences: []
-      }
-    ]
-  },
+// 格式範例，isSample: true 一定唔會出現喺 authoredEncounters 度，所以唔會喺正式遊戲出現
+const SAMPLE_ENCOUNTER = {
+  id: "sample_encounter_do_not_use",
+  enabled: false,
+  isSample: true,
+  locationId: "loc_shatin",
+  possibleCharacters: ["char_classmate"],
+  weight: 1,
+  conditions: [],
+  weekRange: null,
+  relatedActionCategory: null,
+  introLines: ["（呢度寫返撞到人嗰刻實際發生咩事／問咩問題）"],
+  choices: [
+    { text: "（回應 A，要對應返上面情境）", attitudeTag: "acceptWarmly", effects: [], relationshipEffects: [] },
+    { text: "（回應 B）", attitudeTag: "refusePolitely", effects: [], relationshipEffects: [] }
+  ],
+  relationshipEffects: [],
+  locationFamiliarityEffects: 1,
+  routeSeedEffects: [],
+  cooldownWeeks: 4,
+  onceOnly: false,
+  silentLog: null
+};
 
-  // ===== 深水埗 =====
-  {
-    id: "enc_sspk_mystery_neighbor_first",
-    locationId: "loc_sspk",
-    possibleCharacters: ["char_mystery_neighbor"],
-    weight: 4,
-    conditions: [{ type: "notMetCharacter", characterId: "char_mystery_neighbor" }],
-    weekRange: null,
-    relatedActionCategory: "探索",
-    resultMessageId: null,
-    resultDialogueId: null,
-    relationshipEffects: [],
-    locationFamiliarityEffects: 1,
-    routeSeedEffects: [{ seedId: "streetSeed", amount: 1 }],
-    cooldownWeeks: 0,
-    onceOnly: true,
-    silentLog: { type: "支線", title: "喺深水埗舊店門口遇見神秘街坊", body: "你喺深水埗一間舊店門口遇見一位古怪嘅街坊叔叔。佢冇自我介紹，只問你：「你知唔知呢部遊戲機點解仲會着？」", tags: ["解鎖：神秘街坊高手"] }
-  },
-  {
-    id: "enc_sspk_mystery_neighbor_repeat",
-    locationId: "loc_sspk",
-    possibleCharacters: ["char_mystery_neighbor"],
-    weight: 3,
-    conditions: [{ type: "hasMetCharacter", characterId: "char_mystery_neighbor" }],
-    weekRange: null,
-    relatedActionCategory: "探索",
-    resultMessageId: null,
-    resultDialogueId: null,
-    relationshipEffects: [{ characterId: "char_mystery_neighbor", dimension: "trust", amount: 2 }],
-    locationFamiliarityEffects: 1,
-    routeSeedEffects: [{ seedId: "streetSeed", amount: 1 }],
-    cooldownWeeks: 2,
-    onceOnly: false,
-    silentLog: { type: "支線", title: "又撞到神秘街坊高手", body: "佢照舊喺舖頭門口執緊嘢，見到你都會點下頭。", tags: ["神秘街坊信任度+2"] }
-  },
-  {
-    id: "enc_sspk_cha_chaan_teng",
-    locationId: "loc_sspk",
-    possibleCharacters: ["char_cha_chaan_teng"],
-    weight: 2,
-    conditions: [],
-    weekRange: null,
-    relatedActionCategory: "探索",
-    resultMessageId: null,
-    resultDialogueId: null,
-    relationshipEffects: [{ characterId: "char_cha_chaan_teng", dimension: "closeness", amount: 1 }],
-    locationFamiliarityEffects: 1,
-    routeSeedEffects: [{ seedId: "streetSeed", amount: 1 }],
-    cooldownWeeks: 2,
-    onceOnly: false,
-    silentLog: { type: "支線", title: "阿成原來喺深水埗都有相熟舖頭", body: "你喺深水埗撞到阿成嚟入貨，佢介紹咗間相熟嘅小店俾你。", tags: [] }
-  },
-  {
-    id: "enc_sspk_secondhand_owner",
-    locationId: "loc_sspk",
-    possibleCharacters: ["char_mystery_neighbor"],
-    weight: 2,
-    conditions: [],
-    weekRange: null,
-    relatedActionCategory: "探索",
-    resultMessageId: null,
-    resultDialogueId: null,
-    relationshipEffects: [],
-    locationFamiliarityEffects: 0,
-    routeSeedEffects: [],
-    cooldownWeeks: 2,
-    onceOnly: false,
-    silentLog: null,
-    introLines: ["你喺深水埗街尾見到一間舊遊戲機店，舖頭光管有啲閃。"],
-    choices: [
-      {
-        text: "入去睇下。",
-        tone: "冒險試試",
-        attitudeTag: "takeRisk",
-        visibleToneLabel: "行入去睇下",
-        effects: [{ type: "statChange", stat: "體力", amount: -1 }],
-        relationshipEffects: [{ characterId: "char_mystery_neighbor", dimension: "closeness", amount: 3 }],
-        addMemory: [{ characterId: "char_mystery_neighbor", text: "你入咗嚟間舊舖睇" }],
-        setFlags: [],
-        routeSeedEffects: [{ seedId: "explorationSeed", amount: 2 }, { seedId: "streetSeed", amount: 1 }],
-        locationFamiliarityEffects: 1,
-        addReviewLog: { type: "支線", title: "你行入咗間舊遊戲機店", body: "舖主原來就係神秘街坊高手，你哋傾咗幾句。", tags: ["解鎖／加深：神秘街坊"] },
-        delayedConsequences: []
-      },
-      {
-        text: "企喺門口睇下先。",
-        tone: "先觀察",
-        attitudeTag: "observeFirst",
-        visibleToneLabel: "喺門口睇下先",
-        effects: [],
-        relationshipEffects: [],
-        addMemory: [],
-        setFlags: [],
-        routeSeedEffects: [{ seedId: "explorationSeed", amount: 1 }],
-        locationFamiliarityEffects: 2,
-        addReviewLog: { type: "支線", title: "你喺門口觀察咗一陣", body: "你冇入去，但記低咗呢間舖嘅位置，之後應該仲會經過。", tags: ["觀察者傾向+1"] },
-        delayedConsequences: []
-      },
-      {
-        text: "算啦，行過去先。",
-        tone: "避免衝突",
-        attitudeTag: "avoidConflict",
-        visibleToneLabel: "唔理佢，行過去",
-        effects: [{ type: "statChange", stat: "體力", amount: 1 }],
-        relationshipEffects: [],
-        addMemory: [],
-        setFlags: [],
-        routeSeedEffects: [],
-        locationFamiliarityEffects: 0,
-        addReviewLog: null,
-        delayedConsequences: []
-      }
-    ]
-  },
+// 正式內容——依家係空，等作者手動填。喺呢個陣列入面加入你自己寫嘅 encounter（唔好加 SAMPLE_ENCOUNTER 呢類 isSample 資料）。
+const authoredEncounters = [];
 
-  // ===== 旺角 =====
-  {
-    id: "enc_mongkok_classmate",
-    locationId: "loc_mongkok",
-    possibleCharacters: ["char_classmate"],
-    weight: 4,
-    conditions: [],
-    weekRange: null,
-    relatedActionCategory: "朋友",
-    resultMessageId: null,
-    resultDialogueId: null,
-    relationshipEffects: [{ characterId: "char_classmate", dimension: "closeness", amount: 2 }],
-    locationFamiliarityEffects: 1,
-    routeSeedEffects: [{ seedId: "friendshipSeed", amount: 1 }],
-    cooldownWeeks: 1,
-    onceOnly: false,
-    silentLog: { type: "朋友", title: "旺角街頭撞到李明", body: "你哋喺旺角街頭撞到，一齊行咗幾間舖頭。", tags: ["李明親近度+2"] }
-  },
-  {
-    id: "enc_mongkok_tutor",
-    locationId: "loc_mongkok",
-    possibleCharacters: ["char_tutor"],
-    weight: 3,
-    conditions: [],
-    weekRange: null,
-    relatedActionCategory: "學習",
-    resultMessageId: null,
-    resultDialogueId: null,
-    relationshipEffects: [{ characterId: "char_tutor", dimension: "trust", amount: 1 }],
-    locationFamiliarityEffects: 1,
-    routeSeedEffects: [{ seedId: "academicSeed", amount: 1 }],
-    cooldownWeeks: 2,
-    onceOnly: false,
-    silentLog: null
-  },
-  {
-    id: "enc_mongkok_stationery_owner",
-    locationId: "loc_mongkok",
-    possibleCharacters: ["char_cha_chaan_teng"],
-    weight: 2,
-    conditions: [],
-    weekRange: null,
-    relatedActionCategory: "興趣",
-    resultMessageId: null,
-    resultDialogueId: null,
-    relationshipEffects: [],
-    locationFamiliarityEffects: 1,
-    routeSeedEffects: [{ seedId: "creativeSeed", amount: 1 }],
-    cooldownWeeks: 2,
-    onceOnly: false,
-    silentLog: { type: "支線", title: "文具店老闆嘅推介", body: "文具店老闆同你介紹咗一款新出嘅畫具，睇落幾好玩。", tags: [] }
-  },
-
-  // ===== 銅鑼灣 =====
-  {
-    id: "enc_causeway_best_friend",
-    locationId: "loc_causeway",
-    possibleCharacters: ["char_best_friend"],
-    weight: 4,
-    conditions: [],
-    weekRange: null,
-    relatedActionCategory: "興趣",
-    resultMessageId: null,
-    resultDialogueId: null,
-    relationshipEffects: [{ characterId: "char_best_friend", dimension: "closeness", amount: 2 }],
-    locationFamiliarityEffects: 1,
-    routeSeedEffects: [{ seedId: "creativeSeed", amount: 1 }],
-    cooldownWeeks: 1,
-    onceOnly: false,
-    silentLog: { type: "朋友", title: "同小美一齊睇興趣班資訊", body: "你同小美喺銅鑼灣一齊睇興趣班單張，傾得幾開心。", tags: ["小美親近度+2"] }
-  },
-  {
-    id: "enc_causeway_street_performer",
-    locationId: "loc_causeway",
-    possibleCharacters: ["char_best_friend"],
-    weight: 2,
-    conditions: [],
-    weekRange: null,
-    relatedActionCategory: "探索",
-    resultMessageId: null,
-    resultDialogueId: null,
-    relationshipEffects: [],
-    locationFamiliarityEffects: 0,
-    routeSeedEffects: [],
-    cooldownWeeks: 2,
-    onceOnly: false,
-    silentLog: null,
-    introLines: ["街頭有個表演者唱緊歌，圍咗一小圈人，小美拉住你話「不如企埋去睇？」"],
-    choices: [
-      {
-        text: "企埋去，仲跟住拍手。",
-        tone: "熱情接受",
-        attitudeTag: "acceptWarmly",
-        visibleToneLabel: "投入咁睇表演",
-        effects: [{ type: "statChange", stat: "快樂", amount: 3 }],
-        relationshipEffects: [{ characterId: "char_best_friend", dimension: "closeness", amount: 2 }],
-        addMemory: [{ characterId: "char_best_friend", text: "你哋一齊睇過街頭表演" }],
-        setFlags: [],
-        routeSeedEffects: [{ seedId: "performanceSeed", amount: 2 }],
-        locationFamiliarityEffects: 1,
-        addReviewLog: { type: "支線", title: "你同小美一齊睇街頭表演", body: "你都幾投入，開始鍾意呢種氣氛。", tags: [] },
-        delayedConsequences: []
-      },
-      {
-        text: "喺遠少少嘅位置睇。",
-        tone: "先觀察",
-        attitudeTag: "observeFirst",
-        visibleToneLabel: "喺遠少少睇",
-        effects: [],
-        relationshipEffects: [],
-        addMemory: [],
-        setFlags: [],
-        routeSeedEffects: [{ seedId: "performanceSeed", amount: 1 }],
-        locationFamiliarityEffects: 1,
-        addReviewLog: { type: "支線", title: "你喺遠處睇街頭表演", body: "你都有留意到，但冇行埋去。", tags: [] },
-        delayedConsequences: []
-      },
-      {
-        text: "唔多想睇，繼續行。",
-        tone: "禮貌拒絕",
-        attitudeTag: "refusePolitely",
-        visibleToneLabel: "話想繼續行",
-        effects: [{ type: "statChange", stat: "體力", amount: 1 }],
-        relationshipEffects: [{ characterId: "char_best_friend", dimension: "closeness", amount: -1 }],
-        addMemory: [],
-        setFlags: [],
-        routeSeedEffects: [],
-        locationFamiliarityEffects: 0,
-        addReviewLog: null,
-        delayedConsequences: []
-      }
-    ]
-  },
-
-  // ===== 中環 =====
-  {
-    id: "enc_central_museum_guide",
-    locationId: "loc_central",
-    possibleCharacters: ["char_mom"],
-    weight: 3,
-    conditions: [],
-    weekRange: null,
-    relatedActionCategory: "探索",
-    resultMessageId: null,
-    resultDialogueId: null,
-    relationshipEffects: [{ characterId: "char_mom", dimension: "closeness", amount: 1 }],
-    locationFamiliarityEffects: 1,
-    routeSeedEffects: [{ seedId: "sponsorSeed", amount: 1 }],
-    cooldownWeeks: 2,
-    onceOnly: false,
-    silentLog: { type: "支線", title: "展覽導賞員嘅解說", body: "導賞員嘅解說令你對呢個展覽有咗新嘅睇法。", tags: [] }
-  },
-  {
-    id: "enc_central_parent_colleague",
-    locationId: "loc_central",
-    possibleCharacters: ["char_dad"],
-    weight: 2,
-    conditions: [],
-    weekRange: null,
-    relatedActionCategory: "家庭",
-    resultMessageId: null,
-    resultDialogueId: null,
-    relationshipEffects: [{ characterId: "char_dad", dimension: "closeness", amount: 1 }],
-    locationFamiliarityEffects: 1,
-    routeSeedEffects: [{ seedId: "sponsorSeed", amount: 1 }],
-    cooldownWeeks: 2,
-    onceOnly: false,
-    silentLog: { type: "家庭", title: "見識大人嘅世界", body: "你跟爸爸去辦事，見到大人開會嘅場面，覺得幾新奇。", tags: [] }
-  }
-];
+export const encounters = authoredEncounters.filter(e => e.enabled !== false && !e.isSample);
 
 export function getEncountersForLocation(locationId) {
   return encounters.filter(e => e.locationId === locationId);

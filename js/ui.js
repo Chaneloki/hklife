@@ -7,14 +7,20 @@ import { getActionById } from "../data/actions.js";
 import { getLocationById } from "../data/locations.js";
 import { getStageCategoryMeta } from "../data/relationshipStages.js";
 import { termGoals, getGoalById, getDirectionById } from "../data/goals.js";
+import { getCompetitionById } from "../data/opportunities.js";
 import {
   getCurrentStage, getCurrentTerm, getCurrentLocation,
   getUnlockedLocations, getKnownCharacters,
   getUnreadMessageObjects, getGoalProgressPercent, getGoalSubProgress, getAllActionsData,
   getActionTabs, getAvailableActionsByCategory, getRecommendedActions,
   getMessageVariantByRelationship, getAvailableChoicesByRelationship,
-  generateRelationshipSummary, getChoicePreview
+  generateRelationshipSummary, getChoicePreview, getGoalStatus
 } from "./engine.js";
+
+const GOAL_CATEGORY_LABELS = {
+  termGoal: "本學期心願", schoolGoals: "學校任務", hobbyGoals: "興趣承諾",
+  opportunityGoals: "比賽／機會", relationshipGoals: "關係事件", routeGoals: "特殊傾向"
+};
 
 const statMeta = {
   快樂: { emoji: "😊" },
@@ -27,10 +33,20 @@ const statMeta = {
   紀律: { emoji: "📏" },
   金錢: { emoji: "💰" },
   家庭關係: { emoji: "🏠" },
-  人脈: { emoji: "🤝" }
+  人脈: { emoji: "🤝" },
+  理智值: { emoji: "🧘" }
 };
 
-const CORE_STAT_KEYS = ["快樂", "壓力", "體力", "學業", "社交", "創意", "家庭關係", "自信"];
+const CORE_STAT_KEYS = ["快樂", "理智值", "體力", "學業", "社交", "創意", "家庭關係", "自信"];
+
+// 所有玩家可見數字（核心資源、進度、獎勵、需求值）render 之前一律經呢個 helper，確保唔會出現 57.5 呢類小數
+function formatNumber(value) {
+  return Math.round(value ?? 0);
+}
+// 「58/100」格式（冇空格，慳位、唔會斷行），資源列、checklist、獎勵 tag 全部用呢個
+function formatStat(current, target) {
+  return `${formatNumber(current)}/${formatNumber(target)}`;
+}
 
 const backgroundLabelLookup = buildBackgroundLabelLookup();
 function buildBackgroundLabelLookup() {
@@ -53,9 +69,10 @@ export function switchTab(tabName) {
 }
 
 // ---------- 開局設定畫面 ----------
+// 開局淨係俾玩家揀名同「家庭／地區想唔想自己揀」，性格／天賦／興趣／核心資源上限一律由命運（隨機）決定
 export function renderSetupScreen(selection, onSelect) {
   const categories = getAllBackgroundCategories();
-  const groupLabels = { family: "家庭背景", region: "成長地區", personality: "性格", talent: "天賦", interest: "興趣" };
+  const groupLabels = { family: "家庭背景", region: "成長地區" };
 
   const container = document.getElementById("setup-body");
   container.innerHTML = "";
@@ -64,28 +81,107 @@ export function renderSetupScreen(selection, onSelect) {
   nameGroup.className = "setup-group";
   nameGroup.innerHTML = `
     <h4>你嘅名字</h4>
-    <input id="input-player-name" class="name-input" type="text" placeholder="輸入你嘅名 / 花名" value="${selection.playerName || ""}" />
+    <input id="input-player-name" class="name-input" type="text" placeholder="輸入你嘅名 / 花名，留空會用隨機名" value="${selection.playerName || ""}" />
   `;
   container.appendChild(nameGroup);
 
-  Object.entries(categories).forEach(([key, list]) => {
+  ["family", "region"].forEach(key => {
+    const list = categories[key];
     const group = document.createElement("div");
     group.className = "setup-group";
+    const modeRowId = `mode-row-${key}`;
     const rowId = `option-row-${key}`;
-    group.innerHTML = `<h4>${groupLabels[key]}</h4><div class="option-row" id="${rowId}"></div>`;
+    group.innerHTML = `
+      <h4>${groupLabels[key]}</h4>
+      <div class="option-row" id="${modeRowId}">
+        <div class="option-chip ${selection[`${key}Mode`] === "random" ? "selected" : ""}" data-mode="random">隨機</div>
+        <div class="option-chip ${selection[`${key}Mode`] === "choose" ? "selected" : ""}" data-mode="choose">自己揀</div>
+      </div>
+      <div class="option-row ${selection[`${key}Mode`] === "choose" ? "" : "hidden"}" id="${rowId}"></div>
+    `;
     container.appendChild(group);
 
-    const row = group.querySelector(`#${rowId}`);
-    list.forEach(opt => {
-      const chip = document.createElement("div");
-      chip.className = "option-chip" + (selection[key] === opt.id ? " selected" : "");
-      chip.innerHTML = `${opt.name}<small>${opt.description}</small>`;
-      chip.addEventListener("click", () => onSelect(key, opt.id));
-      row.appendChild(chip);
+    group.querySelectorAll(`#${modeRowId} .option-chip`).forEach(btn => {
+      btn.addEventListener("click", () => onSelect(`${key}Mode`, btn.dataset.mode));
     });
+
+    if (selection[`${key}Mode`] === "choose") {
+      const row = group.querySelector(`#${rowId}`);
+      list.forEach(opt => {
+        const chip = document.createElement("div");
+        chip.className = "option-chip" + (selection[key] === opt.id ? " selected" : "");
+        chip.innerHTML = `${opt.name}<small>${opt.description}</small>`;
+        chip.addEventListener("click", () => onSelect(key, opt.id));
+        row.appendChild(chip);
+      });
+    }
   });
 
-  document.getElementById("input-player-name").addEventListener("input", (e) => onSelect("playerName", e.target.value));
+  const hintGroup = document.createElement("p");
+  hintGroup.className = "modal-sub";
+  hintGroup.textContent = "性格、天賦、興趣傾向同核心資源上限會由系統隨機決定，你會喺下一步睇到「人生起點報告」。";
+  container.appendChild(hintGroup);
+
+  // 姓名輸入唔可以每打一個字就觸發成個 setup 畫面重建（會令 input 失焦）。
+  // 呢度淨係直接寫入 selection.playerName（同一個物件參照），唔會叫 onSelect／重新 render。
+  // 中文輸入法揀字期間（compositionstart～compositionend）唔當佢係「已完成輸入」，避免揀字被打斷。
+  const nameInput = document.getElementById("input-player-name");
+  let isComposing = false;
+  nameInput.addEventListener("compositionstart", () => { isComposing = true; });
+  nameInput.addEventListener("compositionend", (e) => {
+    isComposing = false;
+    selection.playerName = e.target.value;
+  });
+  nameInput.addEventListener("input", (e) => {
+    selection.playerName = e.target.value;
+  });
+  nameInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !isComposing) {
+      e.preventDefault();
+      document.getElementById("btn-confirm-setup").click();
+    }
+  });
+}
+
+// ---------- 人生起點報告 ----------
+export function renderStartingReport(state) {
+  const el = document.getElementById("report-body");
+  const report = state.startingPotentialReport;
+  const bg = state.background;
+
+  const capRows = report.capEntries.map(entry => `
+    <div class="subgoal-row">
+      <span class="subgoal-label">${statMeta[entry.stat]?.emoji || ""} ${entry.stat}</span>
+      <div class="stat-bar"><div class="stat-bar-fill" style="width:${Math.min(100, (formatNumber(entry.current) / formatNumber(entry.cap)) * 100)}%"></div></div>
+      <span class="subgoal-value">${formatStat(entry.current, entry.cap)}</span>
+    </div>
+  `).join("");
+
+  el.innerHTML = `
+    <div class="card character-card">
+      <div class="character-card-row">
+        <div class="character-avatar">🧒</div>
+        <div>
+          <div class="character-name">${state.playerName || "無名氏"}</div>
+          <div class="character-sub">${backgroundLabelLookup[bg.regionId] || "香港"}成長 ・ ${backgroundLabelLookup[bg.familyId] || ""}</div>
+        </div>
+      </div>
+      <div class="character-tags">
+        <span>性格：${backgroundLabelLookup[bg.personalityId] || "待發掘"}</span>
+        <span>天賦：${backgroundLabelLookup[bg.talentId] || "待發掘"}</span>
+        <span>興趣傾向：${backgroundLabelLookup[bg.interestId] || "待發掘"}</span>
+      </div>
+    </div>
+    <div class="card">
+      <h4>🎲 起始總點數池：${formatNumber(report.totalPoints ?? report.totalCap)} 點</h4>
+      <p class="direction-reason">${report.summary}</p>
+      <details class="report-explain-toggle">
+        <summary>查看說明</summary>
+        <p class="report-explain-text">呢啲點數已經分配到各項目前值；所有核心資源初始上限都係 100。日後可以透過長期訓練、興趣班、比賽同事件慢慢突破上限。</p>
+      </details>
+      <div class="subgoal-list">${capRows}</div>
+    </div>
+  `;
 }
 
 // ---------- 頂部 dashboard ----------
@@ -168,15 +264,412 @@ export function renderGoalProgressCard(state) {
   `;
 }
 
-export function renderStatsGrid(stats) {
-  const el = document.getElementById("stats-grid");
-  el.innerHTML = CORE_STAT_KEYS.map(key => {
-    const value = stats[key] ?? 0;
+// ---------- 最重要目標（dashboard 最多顯示 3 個） ----------
+export function renderUrgentGoalsList(state, urgentGoals) {
+  const el = document.getElementById("urgent-goals-list");
+  if (!urgentGoals.length) {
+    el.innerHTML = `<p class="muted-text">暫時冇特別緊急嘅目標。</p>`;
+    return;
+  }
+  el.innerHTML = urgentGoals.map(g => `
+    <div class="urgent-goal-card">
+      <span class="journal-type-badge">${g.category}</span>
+      <span class="urgent-goal-name">${g.name}</span>
+      ${g.weeksRemaining ? `<span class="meta-chip meta-chip-limited">${g.weeksRemaining} 週</span>` : ""}
+    </div>
+  `).join("");
+}
+
+// ---------- 目標頁 modal（分類 tab + checklist 詳情） ----------
+let currentGoalsTab = "全部";
+
+// 將 effect[] 轉做人睇得明、數字一律整數嘅獎勵句，例如「家庭關係 +5、金錢 +15」
+function formatEffectsList(effects = []) {
+  return effects.map(e => {
+    if (e.type === "statChange") return `${e.stat} ${e.amount >= 0 ? "+" : ""}${formatNumber(e.amount)}`;
+    if (e.type === "addMoney") return `金錢 +${formatNumber(e.amount)}`;
+    return "";
+  }).filter(Boolean).join("、");
+}
+
+function checklistRowHtml(sg) {
+  return `
+    <div class="goal-checklist-row">
+      <span class="goal-checklist-check">${sg.done ? "☑" : "☐"}</span>
+      <span class="goal-checklist-label">${sg.label}</span>
+      <span class="goal-checklist-value">${formatSubGoalValue(sg)}</span>
+    </div>
+  `;
+}
+
+function renderTermGoalCard(state, goal) {
+  const status = getGoalStatus(goal.id, state);
+  const subProgress = getGoalSubProgress(goal.id, state);
+  const term = getCurrentTerm(state);
+  const rewardText = formatEffectsList(goal.successRewards);
+  return `
+    <div class="goal-detail-card">
+      <div class="goal-detail-name">${goal.name}</div>
+      <div class="action-meta-row">
+        <span class="meta-chip">本學期心願</span>
+        <span class="meta-chip meta-chip-limited">期限：第 ${goal.deadlineWeek || term?.totalWeeks || "?"} 週前</span>
+        <span class="meta-chip">狀態：${status}</span>
+      </div>
+      ${goal.description ? `<p class="goal-detail-desc">${goal.description}</p>` : ""}
+      <p class="goal-section-title">條件</p>
+      <div class="goal-checklist-list">${subProgress.map(checklistRowHtml).join("")}</div>
+      <p class="goal-section-title">獎勵</p>
+      <p class="goal-detail-reward">🎁 ${rewardText || "少量狀態提升"}</p>
+      <p class="goal-section-title">未完成</p>
+      <p class="goal-detail-noharm">沒有懲罰，但會影響學期回顧和人生方向。</p>
+    </div>
+  `;
+}
+
+// 比賽／機會目標卡：清楚分開「參加資格」（entryRequirements）同「準備進度」（preparationRequirements）
+function renderOpportunityGoalCard(state, goalEntry) {
+  const compId = goalEntry.id.replace("goal_opportunity_", "");
+  const comp = getCompetitionById(compId);
+  const status = "進行中";
+  const prepCount = state.opportunityProgress[compId]?.prepCount || 0;
+  const prepTarget = comp?.preparationRequirements?.count ?? goalEntry.target ?? 0;
+  const prepSg = { label: "比賽準備", current: prepCount, target: prepTarget, done: prepCount >= prepTarget };
+  const rewardText = comp ? formatEffectsList(comp.successRewards) : "";
+  return `
+    <div class="goal-detail-card">
+      <div class="goal-detail-name">${goalEntry.name}</div>
+      <div class="action-meta-row">
+        <span class="meta-chip">比賽／機會</span>
+        ${goalEntry.source ? `<span class="meta-chip">來源：${goalEntry.source}</span>` : ""}
+        <span class="meta-chip meta-chip-limited">期限：第 ${goalEntry.deadlineAt} 週前</span>
+        <span class="meta-chip">狀態：${status}</span>
+      </div>
+      ${goalEntry.description ? `<p class="goal-detail-desc">${goalEntry.description}</p>` : ""}
+      <p class="goal-section-title">準備進度</p>
+      <div class="goal-checklist-list">${checklistRowHtml(prepSg)}</div>
+      <p class="goal-section-title">獎勵</p>
+      <p class="goal-detail-reward">🎁 ${rewardText || "相關資源提升、NPC 關係提升"}</p>
+      <p class="goal-section-title">未完成</p>
+      <p class="goal-detail-noharm">沒有懲罰，只是錯過呢次比賽，學期回顧會記錄你把時間留給咗其他方向。</p>
+      ${goalEntry.canAbandon ? `<button class="btn-small btn-secondary goal-abandon-btn" data-cat="opportunityGoals" data-id="${goalEntry.id}">放棄</button>` : ""}
+    </div>
+  `;
+}
+
+export function showGoalsModal(state, goalsByCategory, handlers) {
+  const el = document.getElementById("goals-body");
+  const tabsEl = document.getElementById("goals-tabs");
+
+  const sections = [
+    { key: "termGoal", items: goalsByCategory.termGoal ? [goalsByCategory.termGoal] : [], isTermGoal: true },
+    { key: "schoolGoals", items: goalsByCategory.schoolGoals },
+    { key: "hobbyGoals", items: goalsByCategory.hobbyGoals },
+    { key: "opportunityGoals", items: goalsByCategory.opportunityGoals },
+    { key: "relationshipGoals", items: goalsByCategory.relationshipGoals },
+    { key: "routeGoals", items: goalsByCategory.routeGoals }
+  ];
+  const completedNames = state.completedGoals.map(id => getGoalById(id)).filter(Boolean);
+  const missedNames = state.missedGoals.map(id => getGoalById(id)).filter(Boolean);
+
+  const tabNames = ["全部", ...Object.values(GOAL_CATEGORY_LABELS), "時間表", "身份", "已完成／錯過"];
+  if (tabsEl) {
+    tabsEl.innerHTML = tabNames.map(name => `<div class="option-chip goals-tab-chip${currentGoalsTab === name ? " selected" : ""}" data-tab="${name}">${name}</div>`).join("");
+    tabsEl.querySelectorAll(".goals-tab-chip").forEach(chip => {
+      chip.addEventListener("click", () => {
+        currentGoalsTab = chip.dataset.tab;
+        showGoalsModal(state, goalsByCategory, handlers);
+      });
+    });
+  }
+
+  let bodyHtml = "";
+  if (currentGoalsTab === "已完成／錯過") {
+    const doneCards = completedNames.map(g => `<div class="goal-detail-card"><div class="goal-detail-name">✅ ${g.name}</div></div>`).join("");
+    const missCards = missedNames.map(g => `<div class="goal-detail-card"><div class="goal-detail-name">⌛ ${g.name}</div><p class="goal-detail-noharm">未完成沒有懲罰，只是把時間留給了其他方向。</p></div>`).join("");
+    bodyHtml = doneCards + missCards || `<p class="muted-text">暫時未有已完成或錯過嘅目標。</p>`;
+  } else if (currentGoalsTab === "時間表") {
+    bodyHtml = renderScheduleTab(state, handlers);
+  } else if (currentGoalsTab === "身份") {
+    bodyHtml = renderIdentityTab(state);
+  } else {
+    bodyHtml = sections.filter(sec => currentGoalsTab === "全部" || currentGoalsTab === GOAL_CATEGORY_LABELS[sec.key]).map(sec => {
+      if (!sec.items.length) return "";
+      if (sec.isTermGoal) return sec.items.map(g => renderTermGoalCard(state, g)).join("");
+      if (sec.key === "opportunityGoals") return sec.items.map(g => renderOpportunityGoalCard(state, g)).join("");
+      const cards = sec.items.map(g => `
+        <div class="goal-detail-card">
+          <div class="goal-detail-name">${g.name}</div>
+          <div class="action-meta-row">
+            <span class="meta-chip">${GOAL_CATEGORY_LABELS[sec.key]}</span>
+            ${g.source ? `<span class="meta-chip">來源：${g.source}</span>` : ""}
+            ${g.deadlineAt ? `<span class="meta-chip meta-chip-limited">deadline：第 ${formatNumber(g.deadlineAt)} 週</span>` : ""}
+            ${g.target ? `<span class="meta-chip">進度：${formatStat(g.progress ?? 0, g.target)}</span>` : ""}
+            ${g.level !== undefined ? `<span class="meta-chip">Lv.${formatNumber(g.level)}</span>` : ""}
+            <span class="meta-chip">狀態：進行中</span>
+          </div>
+          ${g.description ? `<p class="goal-detail-desc">${g.description}</p>` : ""}
+          <p class="goal-detail-noharm">未完成沒有懲罰，但會影響學期回顧和人生方向。</p>
+          ${g.canAbandon ? `<button class="btn-small btn-secondary goal-abandon-btn" data-cat="${sec.key}" data-id="${g.id}">放棄</button>` : ""}
+        </div>
+      `).join("");
+      return cards;
+    }).join("") || `<p class="muted-text">暫時未有任何目標。</p>`;
+  }
+
+  el.innerHTML = bodyHtml;
+  el.querySelectorAll(".goal-abandon-btn").forEach(btn => {
+    btn.addEventListener("click", () => handlers.onAbandon(btn.dataset.cat, btn.dataset.id));
+  });
+  el.querySelectorAll(".schedule-cancel-btn").forEach(btn => {
+    btn.addEventListener("click", () => handlers.onCancelSchedule && handlers.onCancelSchedule(btn.dataset.id));
+  });
+  el.querySelectorAll(".schedule-negotiate-btn").forEach(btn => {
+    btn.addEventListener("click", () => handlers.onNegotiateSchedule && handlers.onNegotiateSchedule(btn.dataset.id));
+  });
+}
+
+// ---------- 時間表 tab：已答應／被安排／參與中，未來會檢查條件嘅事情 ----------
+function renderScheduleTab(state, handlers) {
+  const active = state.scheduledCommitments || [];
+  if (!active.length) return `<p class="muted-text">暫時未有已答應或被安排嘅時間表項目。</p>`;
+  return active.map(item => {
+    const conditionRows = (item.checkConditions || []).map(c => describeScheduleCondition(c, state)).join("");
     return `
-      <div class="stat-card">
-        <div class="stat-label">${statMeta[key]?.emoji || ""} ${key}</div>
-        <div class="stat-value">${value}</div>
-        <div class="stat-bar"><div class="stat-bar-fill" style="width:${value}%"></div></div>
+      <div class="goal-detail-card">
+        <div class="goal-detail-name">${item.name}</div>
+        <div class="action-meta-row">
+          <span class="meta-chip">時間表</span>
+          <span class="meta-chip">來源：${item.source}</span>
+          <span class="meta-chip meta-chip-limited">檢查：第 ${formatNumber(item.checkWeek)} 週</span>
+          ${item.apCostPerWeek ? `<span class="meta-chip">每週 ${formatNumber(item.apCostPerWeek)} AP</span>` : ""}
+        </div>
+        ${item.progressText ? `<p class="goal-detail-desc">${item.progressText}</p>` : ""}
+        <p class="goal-section-title">檢查條件</p>
+        <div class="goal-checklist-list">${conditionRows}</div>
+        <p class="goal-section-title">未達成</p>
+        <p class="goal-detail-noharm">${item.missResultText}</p>
+        <div class="action-meta-row">
+          ${item.canAbandon ? `<button class="btn-small btn-secondary schedule-cancel-btn" data-id="${item.id}">放棄</button>` : ""}
+          ${item.canNegotiate ? `<button class="btn-small btn-secondary schedule-negotiate-btn" data-id="${item.id}">協商</button>` : ""}
+        </div>
+      </div>
+    `;
+  }).join("");
+}
+
+function describeScheduleCondition(condition, state) {
+  const label = condition.stat || condition.category || condition.dimension || condition.locationId || "條件";
+  const current = condition.stat ? formatNumber(state.stats[condition.stat] ?? 0)
+    : condition.category ? formatNumber(state.categoryUsageCounts?.[condition.category] || 0)
+    : "";
+  return `<div class="goal-checklist-row"><span class="goal-checklist-check">□</span><span class="goal-checklist-label">${label} ${condition.type?.includes("Below") ? "<" : "≥"} ${condition.amount}</span><span class="goal-checklist-value">${current !== "" ? `目前 ${current}` : ""}</span></div>`;
+}
+
+// ---------- 身份 tab：目前身份／曾經身份 ----------
+function renderIdentityTab(state) {
+  const active = (state.identities || []).filter(i => i.status === "active");
+  const past = (state.identities || []).filter(i => i.status !== "active");
+  const identityCard = (identity) => `
+    <div class="goal-detail-card">
+      <div class="goal-detail-name">${identity.status === "active" ? "🎖️" : "📜"} ${identity.name}</div>
+      <div class="action-meta-row">
+        <span class="meta-chip">${identity.type || "身份"}</span>
+        <span class="meta-chip">狀態：${identity.status === "active" ? "現任" : identity.status === "completed" ? "已完成" : identity.status === "expired" ? "已完結" : "已放棄"}</span>
+        ${identity.endWeek !== null && identity.endWeek !== undefined ? `<span class="meta-chip meta-chip-limited">至第 ${formatNumber(identity.endWeek)} 週</span>` : ""}
+      </div>
+      ${identity.duties && identity.duties.length ? `<p class="goal-detail-desc">職責：${identity.duties.join("、")}</p>` : ""}
+      ${identity.reviewText ? `<p class="goal-detail-desc">${identity.reviewText}</p>` : ""}
+    </div>
+  `;
+  const html = [
+    `<h5>目前身份</h5>`,
+    active.length ? active.map(identityCard).join("") : `<p class="muted-text">你目前只是一個普通學生。</p>`,
+    `<h5 style="margin-top:14px;">曾經身份</h5>`,
+    past.length ? past.map(identityCard).join("") : `<p class="muted-text">暫時未有曾經擁有嘅身份紀錄。</p>`
+  ];
+  return html.join("");
+}
+export function showGoalsOverlay() { document.getElementById("goals-overlay").classList.remove("hidden"); }
+export function hideGoalsOverlay() { document.getElementById("goals-overlay").classList.add("hidden"); }
+
+// ---------- 興趣班管理 modal ----------
+export function showHobbiesModal(state, allHobbies, knownComps, handlers, qualification = {}, overqualifiedReminders = []) {
+  const el = document.getElementById("hobbies-body");
+  const activeHtml = state.activeHobbies.map(hobbyId => {
+    const hobby = allHobbies.find(h => h.id === hobbyId);
+    if (!hobby) return "";
+    return `
+      <div class="guide-card">
+        <div class="guide-card-header">
+          <span class="guide-card-icon">${hobby.icon}</span>
+          <div><div class="guide-card-name">${hobby.name}</div><span class="guide-card-cat">${hobby.category} ・ 每週 ${hobby.weeklyApCost} AP</span></div>
+        </div>
+        <button class="btn-small btn-danger hobby-quit-btn" data-id="${hobby.id}">放棄</button>
+      </div>
+    `;
+  }).join("");
+
+  const availableHtml = allHobbies
+    .filter(h => !state.activeHobbies.includes(h.id) && h.availableStages.includes(state.stageId))
+    .map(h => {
+      const cooldown = state.quitHobbyCooldowns[h.id];
+      const onCooldown = cooldown && state.totalWeeksElapsed < cooldown;
+      return `
+        <div class="guide-card">
+          <div class="guide-card-header">
+            <span class="guide-card-icon">${h.icon}</span>
+            <div><div class="guide-card-name">${h.name}</div><span class="guide-card-cat">${h.category} ・ 每週 ${h.weeklyApCost} AP ・ $${h.moneyCost}</span></div>
+          </div>
+          <div class="guide-tip-box">💡 ${h.description}</div>
+          <button class="btn-small btn-secondary hobby-join-btn" data-id="${h.id}" ${onCooldown ? "disabled" : ""}>${onCooldown ? "暫時未可以再揀" : "參加"}</button>
+        </div>
+      `;
+    }).join("");
+
+  const oppHtml = knownComps.filter(c => !state.opportunityProgress[c.id] || state.opportunityProgress[c.id].status !== "active").map(c => {
+    const joined = state.opportunityProgress[c.id]?.joined;
+    if (joined) return "";
+    const q = qualification[c.id] || { qualified: true, missing: [] };
+    const reminder = overqualifiedReminders.find(r => r.competitionId === c.id);
+    return `
+      <div class="guide-card">
+        <div class="guide-card-header">
+          <span class="guide-card-icon">🏆</span>
+          <div><div class="guide-card-name">${c.name}</div><span class="guide-card-cat">${c.type}</span></div>
+        </div>
+        <div class="guide-tip-box">💡 ${c.description}</div>
+        ${!q.qualified ? `<div class="opp-not-qualified">尚未符合資格：${q.missing.join("、")}</div>` : ""}
+        ${reminder ? `<div class="opp-reminder">💬 ${reminder.reminderText}</div>` : ""}
+        <div class="action-meta-row">
+          <button class="btn-small btn-secondary opp-join-btn" data-id="${c.id}" ${q.qualified ? "" : "disabled"}>${q.qualified ? "加入目標" : "尚未符合資格"}</button>
+          <button class="btn-small btn-secondary opp-decline-btn" data-id="${c.id}">暫時唔參加</button>
+        </div>
+      </div>
+    `;
+  }).join("");
+
+  el.innerHTML = `
+    <h5>目前參加緊</h5>
+    ${activeHtml || `<p class="muted-text">未有參加任何興趣班。</p>`}
+    <h5>可以參加</h5>
+    ${availableHtml || `<p class="muted-text">暫時冇更多可揀嘅興趣班。</p>`}
+    ${oppHtml ? `<h5>已知嘅比賽／機會</h5>${oppHtml}` : ""}
+  `;
+
+  el.querySelectorAll(".hobby-quit-btn").forEach(btn => btn.addEventListener("click", () => handlers.onQuit(btn.dataset.id)));
+  el.querySelectorAll(".hobby-join-btn").forEach(btn => btn.addEventListener("click", () => handlers.onJoin(btn.dataset.id)));
+  el.querySelectorAll(".opp-join-btn").forEach(btn => btn.addEventListener("click", () => handlers.onOppJoin(btn.dataset.id)));
+  el.querySelectorAll(".opp-decline-btn").forEach(btn => btn.addEventListener("click", () => handlers.onOppDecline(btn.dataset.id)));
+}
+export function showHobbiesOverlay() { document.getElementById("hobbies-overlay").classList.remove("hidden"); }
+export function hideHobbiesOverlay() { document.getElementById("hobbies-overlay").classList.add("hidden"); }
+
+// ---------- 內容編輯器（俾作者手動輸入正式內容，唔屬於遊戲內容本身） ----------
+const CONTENT_TYPE_LABELS = {
+  character: "角色", event: "事件", choice: "選項", goal: "目標",
+  scheduleItem: "Schedule Item", identity: "身份", storyScene: "Story Scene"
+};
+
+export function renderContentEditorTabs(types, currentType, onSelectType) {
+  const el = document.getElementById("content-editor-type-tabs");
+  el.innerHTML = types.map(t => `<div class="option-chip goals-tab-chip${t === currentType ? " selected" : ""}" data-type="${t}">${CONTENT_TYPE_LABELS[t] || t}</div>`).join("");
+  el.querySelectorAll(".option-chip").forEach(chip => {
+    chip.addEventListener("click", () => onSelectType(chip.dataset.type));
+  });
+}
+
+export function setContentEditorText(text) {
+  document.getElementById("content-editor-textarea").value = text;
+}
+
+export function getContentEditorText() {
+  return document.getElementById("content-editor-textarea").value;
+}
+
+export function renderContentEditorWarnings(warnings) {
+  const el = document.getElementById("content-editor-warnings");
+  if (!warnings) {
+    el.innerHTML = "";
+    return;
+  }
+  if (!warnings.length) {
+    el.innerHTML = `<div class="content-editor-ok-line">✅ 冇發現明顯缺漏。</div>`;
+    return;
+  }
+  el.innerHTML = warnings.map(w => `<div class="content-editor-warning-line">⚠️ ${w}</div>`).join("");
+}
+
+export function showContentEditorOverlay() { document.getElementById("content-editor-overlay").classList.remove("hidden"); }
+export function hideContentEditorOverlay() { document.getElementById("content-editor-overlay").classList.add("hidden"); }
+
+// ---------- 成績表 ----------
+export function showReportCard(card, onContinue) {
+  const el = document.getElementById("report-card-body");
+  const subjectHtml = card.subjectScores.map(sc => `<span class="review-stat-tag">${sc.name} ${sc.score}</span>`).join("");
+  el.innerHTML = `
+    <p class="term-review-goal">總評級：${card.overallLabel}（平均 ${card.overallAverage}）</p>
+    <div class="review-stat-tags">${subjectHtml}</div>
+    <h5>操行</h5>
+    <p>${card.conductLabel} — ${card.conductComment}</p>
+    <h5>老師評語</h5>
+    <p>${card.teacherComment}</p>
+    <h5>家長反應</h5>
+    <p>${card.parentReaction}</p>
+  `;
+  document.getElementById("report-card-overlay").classList.remove("hidden");
+  const btn = document.getElementById("btn-report-card-continue");
+  const newBtn = btn.cloneNode(true);
+  btn.parentNode.replaceChild(newBtn, btn);
+  newBtn.addEventListener("click", () => {
+    document.getElementById("report-card-overlay").classList.add("hidden");
+    onContinue();
+  });
+}
+
+// ---------- 人生片段回顧：唔係報告，係一段有場景、對話、結果嘅小故事 ----------
+export function showStoryScene(scene, onContinue) {
+  document.getElementById("story-scene-title").textContent = `📖 ${scene.title}`;
+  const el = document.getElementById("story-scene-body");
+
+  const narrationHtml = (scene.narration || []).map(line => `<p class="story-narration">${line}</p>`).join("");
+  const dialogueHtml = (scene.dialogueLines || []).map(d => `
+    <p class="story-dialogue-line"><span class="story-speaker">${d.speaker}：</span>「${d.text}」</p>
+  `).join("");
+  const effectsHtml = (scene.effects || []).map(e => `<li>${e}</li>`).join("");
+
+  el.innerHTML = `
+    <p class="story-scene-heading">${scene.sceneHeading}</p>
+    ${scene.charactersInvolved && scene.charactersInvolved.length ? `<p class="story-characters">參與角色：${scene.charactersInvolved.join("、")}</p>` : ""}
+    <div class="story-narration-block">${narrationHtml}</div>
+    <div class="story-dialogue-block">${dialogueHtml}</div>
+    <h5>結果</h5>
+    <p class="story-result">${scene.result}</p>
+    <h5>影響</h5>
+    <ul class="story-effects-list">${effectsHtml}</ul>
+  `;
+  document.getElementById("story-scene-overlay").classList.remove("hidden");
+  const btn = document.getElementById("btn-story-scene-continue");
+  const newBtn = btn.cloneNode(true);
+  btn.parentNode.replaceChild(newBtn, btn);
+  newBtn.addEventListener("click", () => {
+    document.getElementById("story-scene-overlay").classList.add("hidden");
+    onContinue();
+  });
+}
+
+export function renderStatsGrid(state) {
+  const el = document.getElementById("stats-grid");
+  const stats = state.stats;
+  el.innerHTML = CORE_STAT_KEYS.map(key => {
+    const value = formatNumber(stats[key] ?? 0);
+    const cap = state.statCaps ? state.statCaps[key] : null;
+    const ceiling = formatNumber(cap || 100);
+    const percent = Math.min(100, (value / ceiling) * 100);
+    return `
+      <div class="stat-row">
+        <div class="stat-row-label">${statMeta[key]?.emoji || ""} ${key}</div>
+        <div class="stat-bar"><div class="stat-bar-fill" style="width:${percent}%"></div></div>
+        <div class="stat-row-value">${formatStat(value, ceiling)}</div>
       </div>
     `;
   }).join("");
@@ -200,6 +693,7 @@ export function renderWeekHeader(state) {
         <div class="ap-dots">${dots}</div>
       </div>
     </div>
+    ${!state.unreadMessages.length && !state.forcedSchedule.length ? `<p class="calm-week-note">這週沒有特別事件，你可以照常安排自己的時間。</p>` : ""}
   `;
 }
 
@@ -211,6 +705,28 @@ export function renderUrgentBanner(state) {
   } else {
     el.classList.add("hidden");
   }
+}
+
+export function renderForcedScheduleBanner(state, onNegotiate) {
+  const el = document.getElementById("forced-schedule-banner");
+  if (!state.forcedSchedule.length) {
+    el.classList.add("hidden");
+    el.innerHTML = "";
+    return;
+  }
+  el.classList.remove("hidden");
+  el.innerHTML = state.forcedSchedule.map(f => {
+    const who = getCharacterById(f.forcedByCharacterId);
+    return `
+      <div class="forced-schedule-row">
+        <span>接下來 ${f.weeksRemaining} 週，每週 1 AP 會被補課佔用（${who ? who.name : "屋企人"}安排）。呢個唔係失敗，只係呢段人生俾大人介入咗。</span>
+        ${f.canNegotiate ? `<button class="btn-small btn-secondary" data-forced-id="${f.id}">同佢商量</button>` : ""}
+      </div>
+    `;
+  }).join("");
+  el.querySelectorAll("[data-forced-id]").forEach(btn => {
+    btn.addEventListener("click", () => onNegotiate(btn.dataset.forcedId));
+  });
 }
 
 export function renderLocationSwitcher(state, onSelectLocation) {
@@ -551,7 +1067,7 @@ const GOAL_STATUS_LABELS = { success: "成功 ✅", partial: "部分完成 🌗"
 
 function formatSubGoalValue(sg) {
   if (sg.type === "flag") return sg.done ? "已完成" : "未完成";
-  return `${Math.round(sg.current * 10) / 10}/${sg.target}`;
+  return formatStat(sg.current, sg.target);
 }
 
 export function showTermReview(review, onContinue) {
@@ -632,10 +1148,12 @@ export function renderAll(state, handlers) {
   renderTopDashboard(state);
   renderCharacterCard(state);
   renderGoalProgressCard(state);
-  renderStatsGrid(state.stats);
+  renderUrgentGoalsList(state, handlers.urgentGoals || []);
+  renderStatsGrid(state);
 
   renderWeekHeader(state);
   renderUrgentBanner(state);
+  renderForcedScheduleBanner(state, handlers.onNegotiateForcedSchedule);
   renderLocationSwitcher(state, handlers.onSelectLocation);
   renderActionTabs(state, handlers.onRefreshActions);
   renderActionList(state, handlers.onChooseAction);

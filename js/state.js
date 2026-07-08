@@ -1,8 +1,15 @@
 // js/state.js
 // 管理遊戲狀態（單一 state 物件），唔負責畫面或邏輯運算
 
+// 資料層版本：每次資料結構有唔兼容嘅大改動（例如呢輪將角色由固定資料改成 identity type + generator）就要 bump，
+// 舊存檔嘅版本對唔上就唔會被硬讀入嚟（避免搵唔到已刪除嘅 char_mom / msg_xxx 等舊 id 而爆 undefined）
+// content_reset_v1：內容層清空（舊角色／舊 message／舊 event／舊 story review 全部清咗），
+// bump 呢個版本令舊存檔（引用住已經被刪除嘅 characterId／eventId／messageId）唔會被硬讀入嚟
+export const DATA_VERSION = "content_reset_v1";
+
 export function createInitialState() {
   return {
+    dataVersion: DATA_VERSION,
     playerName: "",
     age: 6,
     stageId: "stage_p1",
@@ -45,8 +52,18 @@ export function createInitialState() {
       紀律: 50,
       金錢: 50,
       家庭關係: 60,
-      人脈: 30
+      人脈: 30,
+      理智值: 60 // 對應「stressTolerance」：抗壓緩衝，同「壓力」（即時負荷）分開
     },
+    // { statName: cap }，8 個核心資源嘅上限，開局一律係 100，之後先可以透過長期訓練慢慢推高
+    statCaps: {},
+    // 開局隨機生成嘅「起始總點數池」（400～800），分配落 8 個核心資源嘅「目前值」（唔係 cap）
+    startingTotalPoints: 0,
+    totalCap: 0, // 向下相容欄位，數值同 startingTotalPoints 一樣
+    // 開局隨機生成嘅「人生起點報告」文字／結構化資料，俾玩家喺開局睇一次
+    startingPotentialReport: null,
+    // 開局設定畫面暫存緊嘅姓名輸入草稿（避免畫面重新 render 時甩漏玩家打緊嘅字）
+    inputDraftName: "",
 
     knownCharacters: ["char_mom", "char_dad", "char_teacher"], // 已經見過／識得嘅人（未必熟）
     unlockedLocations: ["loc_shatin"],
@@ -124,7 +141,63 @@ export function createInitialState() {
     // 玩家設定：預設唔顯示完整數字，淨係顯示「可能影響」
     showDetailedNumbers: false,
     // [{ interactionId, dueWeek }]，popup 事件排緊嘅後續
-    pendingPopupFollowUps: []
+    pendingPopupFollowUps: [],
+
+    // ---------- 第六輪：成績表／強制安排／長期興趣／比賽機會／多目標 ----------
+    reportCards: [],           // 每 6 週一張成績表歷史記錄
+    lastReportCardWeek: 0,
+    lastStoryReviewWeek: 0,    // 上一次生成「人生片段回顧」嘅 totalWeeksElapsed，每 6 週一次
+    // [{ id, actionId, weeksRemaining, forcedByCharacterId, reason, canNegotiate, negotiationConditions }]
+    forcedSchedule: [],
+    academicConcern: 0,        // 長期拒絕補課但成績持續低所累積嘅隱性數值，唔會即刻 game over
+
+    activeHobbies: [],         // hobbyId[]，最多 3 個
+    hobbyHistory: [],          // [{ hobbyId, joinedWeek, quitWeek }]
+    quitHobbyCooldowns: {},    // { hobbyId: totalWeeksElapsed 之後先可以再揀 }
+    hobbyProgress: {},         // { hobbyId: { weeksAttended } }
+
+    knownOpportunities: [],    // competitionId[]，已經收到資訊嘅比賽／機會
+    opportunityProgress: {},   // { competitionId: { prepCount, joined, status } }
+    declinedOpportunities: [], // competitionId[]，玩家揀咗「暫時不參加」嘅機會（唔會有懲罰）
+
+    // 多目標分類（termGoal 沿用 selectedTermGoalId，呢度放埋其餘分類）
+    goalsByCategory: {
+      schoolGoals: [],         // [{ id, ... }] 成績表／補課／學校要求
+      hobbyGoals: [],          // 長期興趣承諾
+      opportunityGoals: [],    // 比賽／機會
+      relationshipGoals: [],   // 朋友邀請、家人約定、老師推薦
+      routeGoals: []           // routeSeed 相關長期暗線
+    },
+    goalProgressMap: {},       // { goalId: number }
+    goalDeadlines: {},         // { goalId: weekNumber（絕對 totalWeeksElapsed）}
+    abandonedGoals: [],        // goalId[]
+
+    // ---------- 第七輪：identity type + personality 生成角色／學術事件 ----------
+    // { slotId: characterInstance }，新人生開始時由 generateCharacters() 產生，取代舊版寫死嘅 characters 陣列
+    generatedCharacters: {},
+    // 已經觸發過嘅學術事件 id 記錄，同埋事件鏈進度
+    academicEventHistory: [],  // eventId[]
+    eventChainProgress: {},    // { chainId: { lastStep, lastEventId } }
+
+    // ---------- 第八輪：時間表（schedule）／身份列表（identity）／六週故事回顧 ----------
+    // 已答應／被安排／參與中，未來某週會檢查條件嘅事情。唔係普通 goal，專門記錄「檢查時間 + 檢查條件」
+    scheduledCommitments: [],  // [{ id, name, source, sourceCharacterId, identityId, checkWeek, checkConditions,
+                               //    progressText, apCostPerWeek, onSuccessEffects, missResultText, canAbandon,
+                               //    canNegotiate, negotiationConditions, relatedCharacterIds, relatedLocationIds,
+                               //    relatedGoalId, relatedChainId, status }]
+    completedSchedules: [],    // scheduleId[]
+    missedSchedules: [],       // scheduleId[]
+
+    // 玩家目前／曾經擁有嘅身份（唔係永久稱號，好多得幾週）
+    identities: [],            // [{ id, name, type, sourceEventId, givenByCharacterId, startWeek, endWeek,
+                               //    duties, benefits, costs, relatedScheduleIds, relatedGoals, relatedRelationships,
+                               //    status, identityEffects, reviewText }]
+
+    // 結構化事件紀錄：每次事件／訊息選擇解決之後都寫一條，俾 generateSixWeekStoryScene() 揀故事線用
+    storyEventLog: [],         // [{ eventId, eventTitle, week, location, charactersInvolved, playerChoiceText,
+                               //    playerAttitudeTag, resultSummary, relationshipChanges, identityChanges,
+                               //    scheduleChanges, goalChanges, routeSeedChanges, followUpEventIds, storyThreadId }]
+    sixWeekStoryHistory: []    // 每 6 週生成一次嘅「人生片段回顧」歷史記錄
   };
 }
 
@@ -140,6 +213,7 @@ export function setState(newState) {
   return state;
 }
 
+// 玩家可見嘅數值一律要係整數，所以呢度連帶做埋四捨五入，避免任何一個 call site 漏咗處理小數
 export function clampStat(value) {
-  return Math.max(0, Math.min(100, value));
+  return Math.round(Math.max(0, Math.min(100, value)));
 }
