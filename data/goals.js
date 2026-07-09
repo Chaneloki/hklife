@@ -51,7 +51,7 @@ export const termGoals = [
     subGoals: [
       { key: "academic", label: "學業", type: "stat", stat: "學業", target: 70 },
       { key: "pressure", label: "壓力風險", type: "statBelow", stat: "壓力", target: 75 },
-      { key: "studyActions", label: "學習行動次數", type: "actionCount", category: "學習", target: 4 }
+      { key: "studyActions", label: "學習行動次數", type: "actionCount", category: "學習策略", target: 4 }
     ],
     successRewards: [{ type: "statChange", stat: "自信", amount: 6 }],
     partialRewards: [{ type: "statChange", stat: "自信", amount: 2 }],
@@ -72,7 +72,7 @@ export const termGoals = [
     subGoals: [
       { key: "closeness", label: "最高同學親近度", type: "relationshipMax", dimension: "closeness", characterIds: ["char_classmate", "char_best_friend"], target: 60 },
       { key: "memories", label: "共同回憶", type: "memoryCount", characterIds: ["char_classmate", "char_best_friend"], target: 2 },
-      { key: "friendActions", label: "朋友互動次數", type: "actionCount", category: "朋友", target: 3 }
+      { key: "friendActions", label: "朋友互動次數", type: "actionCount", category: "朋友相處", target: 3 }
     ],
     successRewards: [{ type: "statChange", stat: "快樂", amount: 6 }],
     partialRewards: [{ type: "statChange", stat: "快樂", amount: 2 }],
@@ -92,8 +92,7 @@ export const termGoals = [
     deadlineWeek: 12,
     subGoals: [
       { key: "creative", label: "創意", type: "stat", stat: "創意", target: 60 },
-      { key: "hobbyActions", label: "興趣行動次數", type: "actionCount", category: "興趣", target: 4 },
-      { key: "artworkFlag", label: "完成作品", type: "flag", flag: "flag_finished_artwork", target: 1 }
+      { key: "hobbyActions", label: "興趣班出席週數", type: "hobbyWeeksAny", target: 6 }
     ],
     successRewards: [{ type: "statChange", stat: "自信", amount: 8 }],
     partialRewards: [{ type: "statChange", stat: "自信", amount: 3 }],
@@ -113,7 +112,7 @@ export const termGoals = [
     deadlineWeek: 12,
     subGoals: [
       { key: "familyRel", label: "家庭關係", type: "stat", stat: "家庭關係", target: 70 },
-      { key: "familyActions", label: "家庭行動次數", type: "actionCount", category: "家庭", target: 3 }
+      { key: "familyActions", label: "家庭行動次數", type: "actionCount", category: "家庭溝通", target: 3 }
     ],
     successRewards: [{ type: "statChange", stat: "家庭關係", amount: 5 }, { type: "addMoney", amount: 15 }],
     partialRewards: [{ type: "addMoney", amount: 5 }],
@@ -124,47 +123,6 @@ export const termGoals = [
     reviewTextPartial: "屋企關係都算穩定，但未算特別親密。",
     reviewTextMiss: "屋企關係未去到最理想，但都冇特別嘅摩擦。"
   },
-  {
-    id: "goal_happy_everyday",
-    name: "我想每天開心一點",
-    description: "想令自己每日都保持好心情。",
-    type: "term",
-    availableStages: ["stage_p1", "stage_p2", "stage_p3"],
-    deadlineWeek: 12,
-    subGoals: [
-      { key: "happy", label: "快樂", type: "stat", stat: "快樂", target: 65 },
-      { key: "pressure", label: "壓力風險", type: "statBelow", stat: "壓力", target: 70 },
-      { key: "relaxActions", label: "休息／朋友行動次數", type: "actionCountAny", categories: ["休息", "朋友"], target: 4 }
-    ],
-    successRewards: [{ type: "statChange", stat: "壓力", amount: -8 }],
-    partialRewards: [{ type: "statChange", stat: "壓力", amount: -3 }],
-    missResult: "呢個學期唔算特別開心，你嘅壓力可能靜靜地累積緊，之後或者會用其他方式浮返出嚟。",
-    routeInfluence: [{ seedId: "dreamSeed", amount: 2 }],
-    visibleHint: "呢個唔係一定要完成，但會影響你嘅學期回顧同人生方向。",
-    reviewTextSuccess: "呢個學期你成日都笑口噬噬，係一段開心嘅日子。",
-    reviewTextPartial: "呢個學期有開心都有唔開心，情緒起伏都算正常。",
-    reviewTextMiss: "呢個學期唔算特別開心，但辛苦嘅日子都撐咗過去，可能你需要留意下自己嘅內心世界。"
-  },
-  {
-    id: "goal_explore_more",
-    name: "我想探索更多地方",
-    description: "想喺屋企附近同香港唔同地區周圍探索。",
-    type: "term",
-    availableStages: ["stage_p1", "stage_p2", "stage_p3"],
-    deadlineWeek: 12,
-    subGoals: [
-      { key: "sspkFamiliarity", label: "深水埗熟悉度", type: "locationFamiliarity", locationId: "loc_sspk", target: 3 },
-      { key: "exploreActions", label: "探索行動次數", type: "actionCount", category: "探索", target: 4 }
-    ],
-    successRewards: [{ type: "statChange", stat: "自信", amount: 5 }],
-    partialRewards: [{ type: "statChange", stat: "自信", amount: 2 }],
-    missResult: "你今個學期冇去幾多地方探索，多數時間留喺熟悉嘅範圍，呢個都係一種安穩嘅選擇。",
-    routeInfluence: [{ seedId: "explorationSeed", amount: 3 }, { seedId: "streetSeed", amount: 1 }],
-    visibleHint: "呢個唔係一定要完成，但會影響你嘅學期回顧同人生方向。",
-    reviewTextSuccess: "你今個學期去咗好多地方探索，眼界都開闊咗唔少。",
-    reviewTextPartial: "你有去過幾次新地方，但仲未算真正周圍探索。",
-    reviewTextMiss: "你今個學期冇去幾多地方探索，多數時間留喺熟悉嘅範圍。"
-  }
 ];
 
 // ---------- 階段目標（累積型，橫跨多個學期） ----------

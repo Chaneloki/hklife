@@ -64,26 +64,6 @@ export const consequences = [
     setFlags: []
   },
   {
-    id: "cons_cha_chaan_snack",
-    source: "action_explore_area",
-    triggerAfterWeeks: 2,
-    triggerConditions: [{ type: "currentLocation", locationId: "loc_mongkok" }],
-    resultMessageId: "msg_cha_chaan_teng_snack",
-    effects: [],
-    addReviewLog: null,
-    setFlags: []
-  },
-  {
-    id: "cons_mystery_neighbor_repair",
-    source: "action_explore_area",
-    triggerAfterWeeks: 3,
-    triggerConditions: [{ type: "hasFlag", flag: "flag_met_mystery_neighbor" }],
-    resultMessageId: "msg_mystery_neighbor_repair",
-    effects: [],
-    addReviewLog: null,
-    setFlags: []
-  },
-  {
     id: "cons_group_deadline",
     source: "msg_teacher_group_invite",
     triggerAfterWeeks: 2,
@@ -102,26 +82,6 @@ export const consequences = [
     effects: [{ type: "statChange", stat: "社交", amount: 3 }],
     addReviewLog: { type: "後續", title: "同阿俊嘅友誼更加穩固", body: "上次公園玩滑板車之後，你哋見面都自然咗好多。", tags: ["社交+3", "來自第3週：公園邀請"] },
     setFlags: []
-  },
-  {
-    id: "cons_night_snack_closer",
-    source: "action_night_snack",
-    triggerAfterWeeks: 2,
-    triggerConditions: [],
-    resultMessageId: null,
-    effects: [{ type: "statChange", stat: "社交", amount: 3 }],
-    addReviewLog: { type: "後續", title: "宵夜之後更加熟落", body: "同小美食完車仔麵之後，你哋成為更加要好嘅朋友。", tags: ["社交+3", "解鎖：真心朋友"] },
-    setFlags: ["flag_trusted_friend"]
-  },
-  {
-    id: "cons_hobby_showcase",
-    source: "action_art_class",
-    triggerAfterWeeks: 3,
-    triggerConditions: [{ type: "statAtLeast", stat: "創意", amount: 60 }],
-    resultMessageId: null,
-    effects: [{ type: "statChange", stat: "自信", amount: 4 }],
-    addReviewLog: { type: "興趣", title: "你完成咗一件像樣嘅作品", body: "經過幾個星期練習，你終於畫出咗一幅滿意嘅作品。", tags: ["自信+4", "解鎖：完成作品"] },
-    setFlags: ["flag_finished_artwork"]
   },
   {
     id: "cons_explore_flag",
@@ -163,16 +123,9 @@ export const consequences = [
     addReviewLog: null,
     setFlags: []
   },
-  {
-    id: "cons_tidy_bag_relief",
-    source: "action_tidy_bag",
-    triggerAfterWeeks: 1,
-    triggerConditions: [],
-    resultMessageId: null,
-    effects: [{ type: "statChange", stat: "壓力", amount: -1 }],
-    addReviewLog: null,
-    setFlags: []
-  },
+  // cons_tidy_bag_relief（source: action_tidy_bag）已刪除：根據 hk_primary_action_hierarchy_v1
+  // 文件核心決定，「整理書包」呢類學校準備雜務唔再係玩家主 action，成個 action 已經喺
+  // data/actions.js 移除，呢條 consequence 冧一齊刪咗。
   {
     id: "cons_video_game_bond",
     source: "action_video_game",
@@ -181,36 +134,6 @@ export const consequences = [
     resultMessageId: null,
     effects: [{ type: "statChange", stat: "社交", amount: 2 }],
     addReviewLog: { type: "朋友", title: "同同學傾機仔話題", body: "你同同學傾起打機話題，關係拉近咗少少。", tags: ["社交+2"] },
-    setFlags: []
-  },
-  {
-    id: "cons_practice_skill_confidence",
-    source: "action_practice_skill",
-    triggerAfterWeeks: 3,
-    triggerConditions: [],
-    resultMessageId: "msg_classmate_admire_skill",
-    effects: [{ type: "statChange", stat: "自信", amount: 4 }],
-    addReviewLog: { type: "興趣", title: "苦練終於見到成果", body: "反覆練習令你對自己拿手嘅項目更加有信心。", tags: ["自信+4"] },
-    setFlags: []
-  },
-  {
-    id: "cons_concert_ticket_hype",
-    source: "action_concert_ticket",
-    triggerAfterWeeks: 1,
-    triggerConditions: [],
-    resultMessageId: null,
-    effects: [{ type: "statChange", stat: "快樂", amount: 2 }],
-    addReviewLog: null,
-    setFlags: []
-  },
-  {
-    id: "cons_stairs_investigate_curiosity",
-    source: "action_mystery_stairs_investigate",
-    triggerAfterWeeks: 1,
-    triggerConditions: [],
-    resultMessageId: "msg_mysterious_stairs_followup",
-    effects: [],
-    addReviewLog: null,
     setFlags: []
   }
 ];

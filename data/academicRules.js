@@ -4,30 +4,34 @@
 // subject schema:
 // { id, name, statWeights: { statName: weight }, actionCategoryWeights: { category: weight } }
 
+// actionCategoryWeights 要用返 data/actions.js 入面實際存在嘅 category 名
+// （學習策略／朋友相處／家庭溝通／休息與情緒／體能玩樂／班務身份／社區探索），
+// 之前用「學習／興趣／探索」呢啲名係打錯字，同 recentActionHistory 嘅
+// category 永遠 match 唔到，實際上行動對分數完全冇作用。
 export const academicSubjects = [
   {
     id: "chinese",
     name: "中文",
     statWeights: { 學業: 0.55, 創意: 0.2 },
-    actionCategoryWeights: { 學習: 3, 興趣: 1 }
+    actionCategoryWeights: { 學習策略: 1 }
   },
   {
     id: "english",
     name: "英文",
     statWeights: { 學業: 0.6 },
-    actionCategoryWeights: { 學習: 3 }
+    actionCategoryWeights: { 學習策略: 1 }
   },
   {
     id: "math",
     name: "數學",
     statWeights: { 學業: 0.65 },
-    actionCategoryWeights: { 學習: 3 }
+    actionCategoryWeights: { 學習策略: 1 }
   },
   {
     id: "general",
     name: "常識／綜合",
     statWeights: { 學業: 0.3, 創意: 0.2 },
-    actionCategoryWeights: { 探索: 2, 學習: 1 }
+    actionCategoryWeights: { 社區探索: 2, 學習策略: 1 }
   }
 ];
 

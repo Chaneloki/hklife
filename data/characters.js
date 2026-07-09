@@ -10,6 +10,7 @@
 import { state } from "../js/state.js";
 import { getIdentityTypeById } from "./identityTypes.js";
 import { getPersonalitiesForIdentity } from "./identityPersonalities.js";
+import { openingEvents } from "./openingEvents.js";
 
 function pickRandom(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
 
@@ -21,8 +22,6 @@ const IDENTITY_LIFE_DIRECTION_INFLUENCE = {
   same_age_peer: [{ directionId: "direction_social", weight: 3 }],
   teacher: [{ directionId: "direction_academic", weight: 3 }],
   tutor: [{ directionId: "direction_academic", weight: 2 }],
-  school_staff: [{ directionId: "direction_academic", weight: 1 }],
-  community_adult: [{ directionId: "direction_explore", weight: 2 }],
   senior_student: [{ directionId: "direction_social", weight: 1 }]
 };
 
@@ -32,21 +31,120 @@ const ADULT_GIVEN_POOL = ["國強", "美英", "志明", "淑芬", "偉強", "慧
 
 // 角色位定義：id 係其他資料（goals/hobbies/opportunities/actions/encounters）用嚟 refer 嘅穩定 key，唔會變
 export const characterSlots = [
-  { id: "char_mom", identityTypeId: "family_elder", roleLabel: "媽媽", avatarEmoji: "👩", fixedName: "媽媽", startKnown: true },
-  { id: "char_dad", identityTypeId: "family_elder", roleLabel: "爸爸", avatarEmoji: "👨", fixedName: "爸爸", startKnown: true },
-  { id: "char_sibling", identityTypeId: "family_peer", roleLabel: "屋企同輩", avatarEmoji: "🧑‍🤝‍🧑", namePrefix: "", nameSuffix: "", startKnown: false },
-  { id: "char_teacher", identityTypeId: "teacher", roleLabel: "班主任", avatarEmoji: "👩‍🏫", nameSuffix: "老師", startKnown: true },
-  { id: "char_classmate", identityTypeId: "same_age_peer", roleLabel: "同班同學", avatarEmoji: "🧒", startKnown: true },
-  { id: "char_best_friend", identityTypeId: "same_age_peer", roleLabel: "同班同學", avatarEmoji: "👧", startKnown: false },
-  { id: "char_tutor", identityTypeId: "tutor", roleLabel: "補習導師", avatarEmoji: "📚", nameSuffix: "Miss/Sir", startKnown: false },
-  { id: "char_librarian", identityTypeId: "school_staff", roleLabel: "圖書館職員", avatarEmoji: "📖", startKnown: false },
-  { id: "char_mystery_neighbor", identityTypeId: "community_adult", roleLabel: "神秘街坊", avatarEmoji: "🧓", startKnown: false },
-  { id: "char_cha_chaan_teng", identityTypeId: "community_adult", roleLabel: "茶餐廳店員", avatarEmoji: "🍳", startKnown: false },
-  { id: "char_prefect", identityTypeId: "senior_student", roleLabel: "高年級風紀", avatarEmoji: "🎖️", startKnown: false }
+  { id: "char_mom", identityTypeId: "family_elder", roleLabel: "媽媽", fixedName: "媽媽", gender: "woman", startKnown: true },
+  { id: "char_dad", identityTypeId: "family_elder", roleLabel: "爸爸", fixedName: "爸爸", gender: "man", startKnown: true },
+  { id: "char_sibling", identityTypeId: "family_peer", roleLabel: "屋企同輩", namePrefix: "", nameSuffix: "", startKnown: false },
+  { id: "char_teacher", identityTypeId: "teacher", roleLabel: "班主任", nameSuffix: "老師", startKnown: true },
+  { id: "char_classmate", identityTypeId: "same_age_peer", roleLabel: "隔離位同學", startKnown: true },
+  { id: "char_best_friend", identityTypeId: "same_age_peer", roleLabel: "同班同學", startKnown: false },
+  { id: "char_tutor", identityTypeId: "tutor", roleLabel: "補習導師", nameSuffix: "Miss/Sir", startKnown: false },
+  {
+    id: "senior_friendly_girl_zhiyau",
+    identityTypeId: "senior_student",
+    roleLabel: "高年級學生",
+    fixedName: "芷悠",
+    displayNameUnknown: "高年級女生",
+    primaryAddressLabel: "芷悠師姐",
+    forcedPersonalityId: "pers_friendly_senior",
+    gender: "girl",
+    fixedLifeStage: "primary_upper",
+    fixedCurrentAge: "9-11歲",
+    fixedCurrentGrade: "小四／小五",
+    startKnown: false
+  },
+  {
+    id: "senior_strict_prefect_junlong",
+    identityTypeId: "senior_student",
+    roleLabel: "風紀／高年級學生",
+    fixedName: "俊朗",
+    displayNameUnknown: "風紀男生",
+    primaryAddressLabel: "俊朗師兄",
+    forcedPersonalityId: "pers_strict_prefect",
+    gender: "boy",
+    fixedLifeStage: "primary_upper",
+    fixedCurrentAge: "10-12歲",
+    fixedCurrentGrade: "小五／小六",
+    startKnown: false
+  },
+  {
+    id: "senior_aloof_baakjin",
+    identityTypeId: "senior_student",
+    roleLabel: "高年級學生",
+    fixedName: "柏言",
+    displayNameUnknown: "高年級男生",
+    primaryAddressLabel: "柏言師兄",
+    forcedPersonalityId: "pers_senior_aloof",
+    gender: "boy",
+    fixedLifeStage: "primary_upper",
+    fixedCurrentAge: "10-12歲",
+    fixedCurrentGrade: "小五／小六",
+    startKnown: false
+  },
+  {
+    id: "senior_captain_hoiching",
+    identityTypeId: "senior_student",
+    roleLabel: "校隊高年級學生",
+    fixedName: "凱晴",
+    displayNameUnknown: "校隊女生",
+    primaryAddressLabel: "凱晴師姐",
+    forcedPersonalityId: "pers_senior_competitive_captain",
+    gender: "girl",
+    fixedLifeStage: "primary_upper",
+    fixedCurrentAge: "10-12歲",
+    fixedCurrentGrade: "小五／小六",
+    startKnown: false
+  },
+  {
+    id: "senior_gentle_helper_gachang",
+    identityTypeId: "senior_student",
+    roleLabel: "圖書服務生／高年級學生",
+    fixedName: "嘉澄",
+    displayNameUnknown: "圖書服務生",
+    primaryAddressLabel: "嘉澄師姐",
+    forcedPersonalityId: "pers_senior_gentle_helper",
+    gender: "girl",
+    fixedLifeStage: "primary_upper",
+    fixedCurrentAge: "9-11歲",
+    fixedCurrentGrade: "小四／小五",
+    startKnown: false
+  }
 ];
 
-function generateName(slot) {
+// 部分 identity+personality 組合喺 authored opening event pool 度已經有固定嘅 npcNameFallback
+// （例如同齡同學．外向邀請型固定叫「家朗」，因為呢個名已經寫死喺 authored 對話文本入面）。
+// 呢度直接讀返 authored 資料建立 personalityId -> 固定名 對照表，唔喺呢個檔案重複打一次個名，
+// 避免兩處資料唔同步。冇對應 authored 固定名嘅 personality，先落返用隨機 name pool。
+function buildFixedNameByPersonality() {
+  const map = {};
+  openingEvents.forEach(e => {
+    (e.variants || []).forEach(v => {
+      if (v.npcNameFallback && v.personalityId) map[v.personalityId] = v.npcNameFallback;
+    });
+  });
+  return map;
+}
+const FIXED_NAME_BY_PERSONALITY = buildFixedNameByPersonality();
+const FIXED_NAME_BY_IDENTITY_PERSONALITY = {
+  same_age_peer: {
+    pers_outgoing_inviter: "家朗",
+    pers_quiet_observer: "穎心",
+    pers_competitive_peer: "梓軒",
+    pers_mischief_maker: "柏宇"
+  },
+  senior_student: {
+    pers_strict_prefect: "俊朗",
+    pers_friendly_senior: "芷悠",
+    pers_senior_aloof: "柏言",
+    pers_senior_competitive_captain: "凱晴",
+    pers_senior_gentle_helper: "嘉澄"
+  }
+};
+
+function generateName(slot, personality) {
   if (slot.fixedName) return slot.fixedName;
+  const identityFixedName = FIXED_NAME_BY_IDENTITY_PERSONALITY[slot.identityTypeId]?.[personality?.id];
+  if (identityFixedName) return identityFixedName;
+  if (personality && FIXED_NAME_BY_PERSONALITY[personality.id]) return FIXED_NAME_BY_PERSONALITY[personality.id];
   if (slot.identityTypeId === "teacher") return `${pickRandom(TEACHER_SURNAMES)}老師`;
   if (slot.identityTypeId === "same_age_peer" || slot.identityTypeId === "senior_student" || slot.identityTypeId === "family_peer") {
     return pickRandom(PEER_NAME_POOL);
@@ -71,18 +169,34 @@ export function generateCharacters(s = state) {
   characterSlots.forEach(slot => {
     const identity = getIdentityTypeById(slot.identityTypeId);
     const pool = getPersonalitiesForIdentity(slot.identityTypeId);
-    const personality = pickRandom(pool);
+    const personality = slot.forcedPersonalityId
+      ? (pool.find(p => p.id === slot.forcedPersonalityId || (p.aliasIds || []).includes(slot.forcedPersonalityId)) || pickRandom(pool))
+      : pickRandom(pool);
     const dims = identity.relationshipDimensionsPriority;
+    const generatedName = generateName(slot, personality);
     s.generatedCharacters[slot.id] = {
       id: slot.id,
       generatedFromIdentityType: slot.identityTypeId,
       personalityId: personality.id,
+      personalityKey: (personality.id || "").replace(/^pers_/, ""),
       reactionProfileId: personality.reactionProfileId,
-      name: generateName(slot),
+      name: generatedName,
+      baseName: generatedName,
+      displayNameKnown: generatedName,
+      displayNameUnknown: slot.displayNameUnknown || slot.roleLabel,
+      primaryAddressLabel: slot.primaryAddressLabel || null,
+      gender: slot.gender || null,
       role: slot.roleLabel,
       roleLabel: slot.roleLabel,
       ageGroup: identity.ageGroup,
-      avatarEmoji: slot.avatarEmoji,
+      lifeStage: slot.fixedLifeStage || null,
+      currentAge: slot.fixedCurrentAge || null,
+      currentGrade: slot.fixedCurrentGrade || null,
+      // icon 一律用 resolveCharacterIcon()（data/characterIconManifest.js）解，唔再用 emoji；
+      // iconPath 一開始係 null，第一次 resolve 咗先會 cache 落嚟，之後成局用返同一張
+      iconPath: null,
+      iconSource: null,
+      explicitIconName: slot.explicitIconName || null,
       personalityTags: [personality.label],
       personalGoal: personality.description,
       values: personality.values,
@@ -111,4 +225,47 @@ export function getCharacterById(id, s = state) {
 
 export function getAllGeneratedCharacters(s = state) {
   return Object.values(s.generatedCharacters || {});
+}
+
+export function normalizeFixedNamedCharacters(s = state) {
+  Object.values(s.generatedCharacters || {}).forEach(character => {
+    const fixedName = FIXED_NAME_BY_IDENTITY_PERSONALITY[character.generatedFromIdentityType]?.[character.personalityId];
+    if (!fixedName) return;
+    character.name = fixedName;
+    character.baseName = fixedName;
+    character.displayNameKnown = fixedName;
+    if (character.generatedFromIdentityType === "same_age_peer") {
+      character.displayNameUnknown = character.roleLabel || "同學";
+    }
+    character.iconPath = null;
+    character.iconSource = null;
+  });
+  return s.generatedCharacters;
+}
+
+// 玩家未識得個名之前，一律顯示呢個角色位嘅 roleLabel（例如「隔離位同學」「帶隊職員」），
+// 唔顯示「神秘人」「同學」「老師」「家人」「職員」呢類 generic label；
+// 一旦 s.knownCharacters 有呢個 id（即 engine.meetCharacter() 已經觸發過），先顯示返真名。
+// 呢個係全局統一嘅顯示邏輯，UI 唔應該再直接讀 character.name。
+export function getCharacterDisplayName(id, s = state) {
+  const character = getCharacterById(id, s);
+  if (!character) return null;
+  const known = (s.knownCharacters || []).includes(id);
+  const stageId = s.stageId || "";
+  const isPrimary = ["stage_p1", "stage_p2", "stage_p3", "stage_p4", "stage_p5", "stage_p6"].includes(stageId);
+  if (known && isPrimary && character.generatedFromIdentityType === "senior_student" && character.primaryAddressLabel) {
+    return character.primaryAddressLabel;
+  }
+  return known ? (character.displayNameKnown || character.name) : (character.displayNameUnknown || character.roleLabel || character.name);
+}
+
+export function getCharacterAddressLabel(characterOrId, s = state) {
+  const character = typeof characterOrId === "string" ? getCharacterById(characterOrId, s) : characterOrId;
+  if (!character) return null;
+  const stageId = s.stageId || "";
+  const isPrimary = ["stage_p1", "stage_p2", "stage_p3", "stage_p4", "stage_p5", "stage_p6"].includes(stageId);
+  if (isPrimary && character.generatedFromIdentityType === "senior_student" && character.primaryAddressLabel) {
+    return character.primaryAddressLabel;
+  }
+  return character.displayNameKnown || character.name;
 }

@@ -58,7 +58,7 @@ export const EXAMPLE_ACADEMIC_EVENT = {
 export const BLANK_CHARACTER_EXAMPLE = {
   id: "", enabled: false, isSample: true,
   name: "", identityType: "", roleLabel: "", personalityId: "", reactionProfileId: "",
-  avatarEmoji: "", introText: "", relationshipDimensions: [], initialRelationship: {},
+  explicitIconName: "", introText: "", relationshipDimensions: [], initialRelationship: {},
   availableStages: [], notes: ""
 };
 

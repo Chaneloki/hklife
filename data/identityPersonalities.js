@@ -17,7 +17,7 @@
 export const identityPersonalities = [
   // ---------- family_elder（5） ----------
   {
-    id: "pers_careful_planner", identityTypeId: "family_elder", label: "謹慎安排型",
+    id: "pers_careful_planner", identityTypeId: "family_elder", label: "謹慎安排型", aliasIds: ["pers_cautious_planner"],
     description: "重視成績、睡眠、規律，習慣提前安排好晒。",
     values: ["學業", "規律", "體力"], likesAttitudes: ["followAdult", "honestTired"], dislikesAttitudes: ["delayReply", "changeTopic"],
     respectsBoundaries: true, sensitiveToSilence: false, valuesHonesty: true, valuesCuriosity: false, valuesReliability: true,
@@ -33,7 +33,7 @@ export const identityPersonalities = [
     eventWeightModifiers: { academic_assessment: 1.3, homework_study: 1.2, parent_intervention: 1.3 }
   },
   {
-    id: "pers_warm_listener", identityTypeId: "family_elder", label: "溫和聆聽型",
+    id: "pers_warm_listener", identityTypeId: "family_elder", label: "溫和聆聽型", aliasIds: ["pers_gentle_listener"],
     description: "重視誠實、情緒、親近，唔急住教訓你。",
     values: ["快樂", "家庭關係"], likesAttitudes: ["honestTired", "askForHelp"], dislikesAttitudes: ["staySilent", "changeTopic"],
     respectsBoundaries: true, sensitiveToSilence: true, valuesHonesty: true, valuesCuriosity: false, valuesReliability: true,
@@ -49,7 +49,7 @@ export const identityPersonalities = [
     eventWeightModifiers: { report_card_followup: 1.1, teacher_intervention: 0.8, parent_intervention: 0.8 }
   },
   {
-    id: "pers_face_saver", identityTypeId: "family_elder", label: "面子期望型",
+    id: "pers_face_saver", identityTypeId: "family_elder", label: "面子期望型", aliasIds: ["pers_face_expectation"],
     description: "重視表現、比較、老師評價，成績表對佢好緊要。",
     values: ["學業", "社交名聲"], likesAttitudes: ["acceptWarmly", "followAdult"], dislikesAttitudes: ["refuseDirectly", "staySilent"],
     respectsBoundaries: false, sensitiveToSilence: true, valuesHonesty: false, valuesCuriosity: false, valuesReliability: true,
@@ -81,7 +81,7 @@ export const identityPersonalities = [
     eventWeightModifiers: { homework_study: 0.8, parent_intervention: 0.7 }
   },
   {
-    id: "pers_loose_supporter", identityTypeId: "family_elder", label: "寬鬆支持型",
+    id: "pers_loose_supporter", identityTypeId: "family_elder", label: "寬鬆支持型", aliasIds: ["pers_relaxed_support"],
     description: "重視快樂、自主、少強迫，比較信得過你自己安排。",
     values: ["快樂", "自主"], likesAttitudes: ["insistSelf", "observeFirst"], dislikesAttitudes: [],
     respectsBoundaries: true, sensitiveToSilence: false, valuesHonesty: false, valuesCuriosity: true, valuesReliability: false,
@@ -189,18 +189,7 @@ export const identityPersonalities = [
     eventWeightModifiers: { academic_assessment: 1.3, competition_opportunity: 1.3 }
   },
   {
-    id: "pers_loyal_sidekick", identityTypeId: "same_age_peer", label: "義氣朋友型",
-    description: "重視承諾和站隊，答應咗嘅嘢會記得。",
-    values: ["信任", "承諾"], likesAttitudes: ["honestTired", "askForHelp"], dislikesAttitudes: ["staySilent", "delayReply"],
-    respectsBoundaries: true, sensitiveToSilence: true, valuesHonesty: true, valuesCuriosity: false, valuesReliability: true,
-    valuesAchievement: false, valuesIndependence: false, valuesGroupHarmony: true,
-    reactionProfileId: "reaction_warm_honesty",
-    toneLines: { greeting: "", closenessHigh: "多得你一直都喺度，有咩事搵我。", closenessLow: "最近點呀？好耐冇傾偈喇。", misunderstandingHigh: "係咪你唔想再同我玩啊？" },
-    goalGivingStyle: "會提你之前答應嘅事", conflictStyle: "重視被兌現嘅承諾", supportStyle: "情緒支援、社交邀請",
-    eventWeightModifiers: { class_service: 1.1 }
-  },
-  {
-    id: "pers_mischief_maker", identityTypeId: "same_age_peer", label: "搞事好奇型",
+    id: "pers_mischief_maker", identityTypeId: "same_age_peer", label: "搞事好奇型", aliasIds: ["pers_curious_troublemaker"],
     description: "容易帶出支線和小麻煩。",
     values: ["好奇心", "刺激"], likesAttitudes: ["takeRisk", "jokeAround"], dislikesAttitudes: ["followAdult"],
     respectsBoundaries: false, sensitiveToSilence: false, valuesHonesty: false, valuesCuriosity: true, valuesReliability: false,
@@ -211,7 +200,7 @@ export const identityPersonalities = [
     eventWeightModifiers: { school_activity: 1.1, class_service: 0.8 }
   },
 
-  // ---------- teacher（5） ----------
+  // ---------- teacher（4；「活動推薦型」已經合併做「關顧型」嘅 event-facing label，唔再係獨立 personality） ----------
   {
     id: "pers_strict_academic", identityTypeId: "teacher", label: "嚴格學業型",
     description: "重視功課、測驗、進步。",
@@ -229,7 +218,7 @@ export const identityPersonalities = [
     eventWeightModifiers: { academic_assessment: 1.4, teacher_intervention: 1.3, homework_study: 1.2 }
   },
   {
-    id: "pers_encouraging_mentor", identityTypeId: "teacher", label: "鼓勵型",
+    id: "pers_encouraging_mentor", identityTypeId: "teacher", label: "鼓勵型", aliasIds: ["pers_encouraging_teacher"],
     description: "重視學生長處和自信。",
     values: ["自信", "長處"], likesAttitudes: ["takeRisk", "honestTired"], dislikesAttitudes: [],
     respectsBoundaries: true, sensitiveToSilence: false, valuesHonesty: true, valuesCuriosity: true, valuesReliability: false,
@@ -261,24 +250,15 @@ export const identityPersonalities = [
     eventWeightModifiers: { class_service: 1.3, report_card_followup: 1.1 }
   },
   {
-    id: "pers_activity_connector", identityTypeId: "teacher", label: "活動推薦型",
-    description: "重視比賽、服務、校內活動。",
-    values: ["活動參與"], likesAttitudes: ["takeRisk", "acceptWarmly"], dislikesAttitudes: ["acceptReluctantly"],
-    respectsBoundaries: true, sensitiveToSilence: false, valuesHonesty: false, valuesCuriosity: true, valuesReliability: false,
-    valuesAchievement: true, valuesIndependence: false, valuesGroupHarmony: true,
-    reactionProfileId: "reaction_encouraging_mentor",
-    toneLines: {
-      greeting: "",
-      closenessHigh: "你其實可以試下參加多啲校內活動。",
-      closenessLow: "有興趣可以留意下校內嘅比賽同活動。",
-      misunderstandingHigh: "如果唔想參加都可以話俾我知，唔勉強。"
-    },
-    goalGivingStyle: "會主動推薦比賽／活動", conflictStyle: "唔太執著單一分數", supportStyle: "活動推薦",
-    eventWeightModifiers: { competition_opportunity: 1.5, school_activity: 1.3 }
-  },
-  {
+    // 「活動推薦型老師」同「關顧型老師」係同一個 canonical teacher personality：
+    // 「活動推薦型老師」係佢喺活動／比賽情境下嘅 event-facing label（唔係獨立人格），
+    // 內部一律 resolve 去呢個 id，唔會拆成兩個唔同嘅老師 NPC。
+    // aliasIds 包含 authored 資料實際用緊嘅 "pers_activity_recommender"（同埋舊版
+    // "pers_activity_connector"、"pers_caring_teacher"），等 getPersonalityByAnyId() 搵得返。
     id: "pers_pastoral_care_teacher", identityTypeId: "teacher", label: "關顧型",
-    description: "重視壓力、情緒、家庭狀態。",
+    aliasIds: ["pers_caring_teacher", "pers_activity_recommender", "pers_activity_connector"],
+    eventFacingLabels: ["關顧型老師", "活動推薦型老師"],
+    description: "重視壓力、情緒、家庭狀態，喺活動／比賽情境下會以「活動推薦型老師」嘅面貌出現，主動推薦比賽、服務、校內活動。",
     values: ["情緒", "家庭狀態"], likesAttitudes: ["honestTired", "askForHelp"], dislikesAttitudes: ["staySilent"],
     respectsBoundaries: true, sensitiveToSilence: true, valuesHonesty: true, valuesCuriosity: false, valuesReliability: false,
     valuesAchievement: false, valuesIndependence: false, valuesGroupHarmony: true,
@@ -289,8 +269,8 @@ export const identityPersonalities = [
       closenessLow: "如果壓力太大，可以搵我傾傾。",
       misunderstandingHigh: "你係咪唔想我知你唔開心？"
     },
-    goalGivingStyle: "會關心多過催谷", conflictStyle: "傾向了解背後原因", supportStyle: "情緒支援、彈性安排",
-    eventWeightModifiers: { report_card_followup: 0.8, parent_intervention: 0.8, teacher_intervention: 1.2 }
+    goalGivingStyle: "會關心多過催谷，亦都會主動推薦比賽／活動", conflictStyle: "傾向了解背後原因", supportStyle: "情緒支援、彈性安排、活動推薦",
+    eventWeightModifiers: { report_card_followup: 0.8, parent_intervention: 0.8, teacher_intervention: 1.2, competition_opportunity: 1.5, school_activity: 1.3 }
   },
 
   // ---------- tutor（5） ----------
@@ -350,123 +330,9 @@ export const identityPersonalities = [
     eventWeightModifiers: { competition_opportunity: 1.3 }
   },
 
-  // ---------- school_staff（5） ----------
-  {
-    id: "pers_staff_gentle", identityTypeId: "school_staff", label: "溫和型",
-    description: "對小朋友有耐性，樂意幫手。",
-    values: ["關懷"], likesAttitudes: ["askForHelp", "acceptWarmly"], dislikesAttitudes: [],
-    respectsBoundaries: true, sensitiveToSilence: false, valuesHonesty: false, valuesCuriosity: false, valuesReliability: false,
-    valuesAchievement: false, valuesIndependence: false, valuesGroupHarmony: true,
-    reactionProfileId: "reaction_pastoral_care",
-    toneLines: { greeting: "", closenessHigh: "早晨呀，今日都要努力喇。", closenessLow: "有需要幫手可以搵我。", misunderstandingHigh: "係咪唔記得咗啲乜？" },
-    goalGivingStyle: "唔太俾正式目標", conflictStyle: "溫和提醒", supportStyle: "校內小支援",
-    eventWeightModifiers: { class_service: 1.1 }
-  },
-  {
-    id: "pers_staff_strict_order", identityTypeId: "school_staff", label: "重規矩型",
-    description: "重視守規矩、排隊、秩序。",
-    values: ["秩序"], likesAttitudes: ["followAdult"], dislikesAttitudes: ["insistSelf", "takeRisk"],
-    respectsBoundaries: false, sensitiveToSilence: false, valuesHonesty: false, valuesCuriosity: false, valuesReliability: true,
-    valuesAchievement: false, valuesIndependence: false, valuesGroupHarmony: true,
-    reactionProfileId: "reaction_strict_result",
-    toneLines: { greeting: "", closenessHigh: "你排隊都幾守規矩，好嘢。", closenessLow: "記得排返好隊。", misunderstandingHigh: "你係咪唔想守規矩？" },
-    goalGivingStyle: "強調規則", conflictStyle: "直接指出違規", supportStyle: "秩序維持",
-    eventWeightModifiers: { class_service: 1.2 }
-  },
-  {
-    id: "pers_staff_chatty", identityTypeId: "school_staff", label: "健談型",
-    description: "鍾意同小朋友吹水，記得好多校園趣事。",
-    values: ["人情味"], likesAttitudes: ["jokeAround", "acceptWarmly"], dislikesAttitudes: [],
-    respectsBoundaries: true, sensitiveToSilence: false, valuesHonesty: false, valuesCuriosity: true, valuesReliability: false,
-    valuesAchievement: false, valuesIndependence: false, valuesGroupHarmony: true,
-    reactionProfileId: "reaction_peer_fun",
-    toneLines: { greeting: "喂，", closenessHigh: "今日又有咩趣事呀？", closenessLow: "得閒過嚟傾偈啦。", misunderstandingHigh: "你唔多同我講嘢喎。" },
-    goalGivingStyle: "冇乜正式目標", conflictStyle: "用傾偈化解", supportStyle: "陪伴、閒聊",
-    eventWeightModifiers: { class_service: 0.9 }
-  },
-  {
-    id: "pers_staff_quiet_efficient", identityTypeId: "school_staff", label: "沉默高效型",
-    description: "唔多講嘢，但做嘢好快好準。",
-    values: ["效率"], likesAttitudes: ["followAdult", "insistSelf"], dislikesAttitudes: ["delayReply"],
-    respectsBoundaries: true, sensitiveToSilence: false, valuesHonesty: false, valuesCuriosity: false, valuesReliability: true,
-    valuesAchievement: false, valuesIndependence: true, valuesGroupHarmony: false,
-    reactionProfileId: "reaction_practical_busy",
-    toneLines: { greeting: "", closenessHigh: "做得幾好，繼續。", closenessLow: "……", misunderstandingHigh: "有事直接講。" },
-    goalGivingStyle: "簡短指令", conflictStyle: "唔多解釋", supportStyle: "實際幫手",
-    eventWeightModifiers: { class_service: 1.0 }
-  },
-  {
-    id: "pers_staff_encouraging", identityTypeId: "school_staff", label: "鼓勵型",
-    description: "鍾意讚小朋友，覺得肯定好重要。",
-    values: ["肯定"], likesAttitudes: ["takeRisk", "acceptWarmly"], dislikesAttitudes: [],
-    respectsBoundaries: true, sensitiveToSilence: false, valuesHonesty: false, valuesCuriosity: true, valuesReliability: false,
-    valuesAchievement: false, valuesIndependence: false, valuesGroupHarmony: true,
-    reactionProfileId: "reaction_encouraging_mentor",
-    toneLines: { greeting: "", closenessHigh: "你做得好好呀，畀個掌聲自己！", closenessLow: "做得幾好喎，繼續加油。", misunderstandingHigh: "唔使唔開心，你已經做得好好。" },
-    goalGivingStyle: "多鼓勵少要求", conflictStyle: "正面肯定", supportStyle: "讚賞、鼓勵",
-    eventWeightModifiers: { class_service: 1.2 }
-  },
-
-  // ---------- community_adult（5） ----------
-  {
-    id: "pers_community_friendly", identityTypeId: "community_adult", label: "熟絡搞笑型",
-    description: "重街坊情誼，見到你會打招呼吹兩句水。",
-    values: ["親近度", "街坊人脈"], likesAttitudes: ["acceptWarmly", "jokeAround"], dislikesAttitudes: [],
-    respectsBoundaries: true, sensitiveToSilence: false, valuesHonesty: false, valuesCuriosity: false, valuesReliability: false,
-    valuesAchievement: false, valuesIndependence: false, valuesGroupHarmony: true,
-    reactionProfileId: "reaction_peer_fun",
-    toneLines: { greeting: "喂！", closenessHigh: "番學仔／女！照舊嗰杯定係試下新出嘅？", closenessLow: "路過就入嚟坐吓啦，唔使客氣。", misunderstandingHigh: "耐冇見喎，咪咁客氣。" },
-    goalGivingStyle: "冇乜正式目標", conflictStyle: "用打趣化解", supportStyle: "街坊人脈、地區支線",
-    eventWeightModifiers: { school_activity: 0.9 }
-  },
-  {
-    id: "pers_community_mysterious", identityTypeId: "community_adult", label: "古怪深藏型",
-    description: "深藏不露，重視好奇心同耐性。",
-    values: ["好奇心", "創意", "持續性"], likesAttitudes: ["observeFirst", "askForHelp", "takeRisk"], dislikesAttitudes: ["acceptReluctantly"],
-    respectsBoundaries: true, sensitiveToSilence: false, valuesHonesty: false, valuesCuriosity: true, valuesReliability: false,
-    valuesAchievement: false, valuesIndependence: true, valuesGroupHarmony: false,
-    reactionProfileId: "reaction_curiosity_based",
-    toneLines: { greeting: "後生仔，", closenessHigh: "今次教你多一招，記住唔好心急。", closenessLow: "得閒先過嚟睇下啦。", misunderstandingHigh: "你都好耐冇嚟喇，仲有冇興趣學？" },
-    goalGivingStyle: "考驗耐性先教嘢", conflictStyle: "唔多解釋，靠你自己體會", supportStyle: "實用技能、創意路線",
-    eventWeightModifiers: { school_activity: 1.1 }
-  },
-  {
-    id: "pers_community_strict_shopkeeper", identityTypeId: "community_adult", label: "嚴肅老闆型",
-    description: "做生意有原則，講一不二。",
-    values: ["誠信"], likesAttitudes: ["honestTired", "followAdult"], dislikesAttitudes: ["staySilent"],
-    respectsBoundaries: true, sensitiveToSilence: true, valuesHonesty: true, valuesCuriosity: false, valuesReliability: true,
-    valuesAchievement: false, valuesIndependence: false, valuesGroupHarmony: false,
-    reactionProfileId: "reaction_boundary_respect",
-    toneLines: { greeting: "", closenessHigh: "你都算老實，我信得過你。", closenessLow: "買嘢俾錢，簡單直接。", misunderstandingHigh: "你想講咩就直接講。" },
-    goalGivingStyle: "唔多俾目標", conflictStyle: "直接講清楚", supportStyle: "小額支援",
-    eventWeightModifiers: {}
-  },
-  {
-    id: "pers_community_worried_guard", identityTypeId: "community_adult", label: "操心保安型",
-    description: "成日提醒你小心，有少少嘮叨。",
-    values: ["安全"], likesAttitudes: ["followAdult", "honestTired"], dislikesAttitudes: ["takeRisk"],
-    respectsBoundaries: true, sensitiveToSilence: false, valuesHonesty: true, valuesCuriosity: false, valuesReliability: true,
-    valuesAchievement: false, valuesIndependence: false, valuesGroupHarmony: true,
-    reactionProfileId: "reaction_strict_result",
-    toneLines: { greeting: "", closenessHigh: "番屋企小心啲，早啲返去。", closenessLow: "出入小心啲呀。", misunderstandingHigh: "你係咪唔聽我講？" },
-    goalGivingStyle: "提醒多過建議", conflictStyle: "傾向擔心", supportStyle: "安全提示",
-    eventWeightModifiers: {}
-  },
-  {
-    id: "pers_community_curious_helper", identityTypeId: "community_adult", label: "好奇幫手型",
-    description: "對街坊小朋友嘅興趣好有興趣，樂意分享知識。",
-    values: ["好奇心", "分享"], likesAttitudes: ["askForHelp", "observeFirst"], dislikesAttitudes: [],
-    respectsBoundaries: true, sensitiveToSilence: false, valuesHonesty: false, valuesCuriosity: true, valuesReliability: false,
-    valuesAchievement: false, valuesIndependence: false, valuesGroupHarmony: true,
-    reactionProfileId: "reaction_curiosity_based",
-    toneLines: { greeting: "", closenessHigh: "你嗰個興趣幾特別喎，講埋俾我聽。", closenessLow: "得閒同我講下你鍾意咩。", misunderstandingHigh: "你係咪唔想講？" },
-    goalGivingStyle: "分享地區小知識", conflictStyle: "唔多起衝突", supportStyle: "實用技能、地區支線",
-    eventWeightModifiers: { school_activity: 1.1 }
-  },
-
   // ---------- senior_student（5） ----------
   {
-    id: "pers_senior_strict_prefect", identityTypeId: "senior_student", label: "嚴格風紀型",
+    id: "pers_strict_prefect", identityTypeId: "senior_student", label: "嚴格風紀型", aliasIds: ["pers_rule_focused", "pers_senior_strict_prefect"],
     description: "認真執行規矩，對後輩要求高。",
     values: ["秩序", "責任感"], likesAttitudes: ["followAdult", "insistSelf"], dislikesAttitudes: ["takeRisk"],
     respectsBoundaries: true, sensitiveToSilence: false, valuesHonesty: false, valuesCuriosity: false, valuesReliability: true,
@@ -477,7 +343,7 @@ export const identityPersonalities = [
     eventWeightModifiers: { class_service: 1.2 }
   },
   {
-    id: "pers_senior_friendly_mentor", identityTypeId: "senior_student", label: "友善師兄姐型",
+    id: "pers_friendly_senior", identityTypeId: "senior_student", label: "友善高年級學生型", aliasIds: ["pers_senior_friendly_mentor", "pers_gentle_support"],
     description: "樂意分享經驗，唔太擺款。",
     values: ["經驗分享"], likesAttitudes: ["askForHelp", "honestTired"], dislikesAttitudes: [],
     respectsBoundaries: true, sensitiveToSilence: false, valuesHonesty: true, valuesCuriosity: true, valuesReliability: false,
@@ -527,4 +393,19 @@ export function getPersonalitiesForIdentity(identityTypeId) {
 }
 export function getPersonalityById(id) {
   return identityPersonalities.find(p => p.id === id);
+}
+
+// 有啲外部資料（例如 authored opening event pool）用嘅 personalityId 同呢度嘅 canonical id 唔完全一致
+// （例如同一個「搞事好奇型」，opening event 入面叫 pers_curious_troublemaker，呢度叫 pers_mischief_maker）。
+// aliasIds 記低呢種同義詞，等 matching 邏輯搵得返，唔使將同一個 personality 概念重複定義兩次。
+export function getPersonalityByAnyId(id, identityTypeId) {
+  const pool = identityTypeId ? getPersonalitiesForIdentity(identityTypeId) : identityPersonalities;
+  return pool.find(p => p.id === id || (p.aliasIds || []).includes(id)) || null;
+}
+
+export function personalityIdMatches(personalityId, eventPersonalityId, identityTypeId) {
+  if (!personalityId || !eventPersonalityId) return false;
+  if (personalityId === eventPersonalityId) return true;
+  const canonical = getPersonalityByAnyId(eventPersonalityId, identityTypeId);
+  return !!canonical && canonical.id === personalityId;
 }

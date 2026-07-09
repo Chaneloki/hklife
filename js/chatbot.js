@@ -1,23 +1,27 @@
 // js/chatbot.js
 // Chatbot 係 bonus function：唔係 weekly action、唔係 event、唔係 hobby class、唔係 review story。
-// 唔消耗 AP，唔可以改核心 property（快樂／理智值／體力／學業／社交／創意／家庭關係／自信），
-// 唔可以改任何 skillExp，唔可以解鎖未認識角色，唔可以生成新正式事件，唔可以取代 authored event。
-// 唯一合法 gameplay 效果：對「正在聊天嗰個已解鎖角色」加少少 relationship（每角色每週上限 +1）。
+// 唔消耗 AP，唔可以解鎖未認識角色，唔可以生成新正式事件，唔可以取代 authored event。
+// 合法 gameplay 效果：
+// 1. 保底 closeness：淨係要成功傾到一句偈（唔理內容），就一定加 +1 closeness，每個角色每週封頂 +1，
+//    唔經 LLM 判斷（避免 LLM 覺得內容太普通就唔加，令玩家覺得「傾咗都冇反應」）。
+// 2. LLM 判斷嘅細幅調整：核心屬性／skillExp／closeness 以外嘅 relationship 維度（trust/respect/
+//    dependency/misunderstanding），每次改動 -2~+2，同 opening event free-input 同一套 sanitize／
+//    clamp 規則（engine.js 嘅 sanitizeChatDeltaEvaluation／applyChatDeltaEvaluation），每角色每週
+//    最多套用一次。
 //
 // BYOK（bring your own key）模式：呢個遊戲唔用開發者自己嘅 API key。玩家要自己輸入自己嘅
 // Gemini／DeepSeek API key，先可以用呢個功能。API key 一律唔存入 game state（即係唔會入 save
 // data／chatHistory／eventHistory），淨係存喺瀏覽器嘅 sessionStorage（預設）或者 localStorage
 // （玩家勾選「記住喺呢部裝置」先會用），backend relay 亦都唔會 log 或者保存呢條 key。
 
-import { getKnownCharacters, getCharacterRelationship, applyRelationshipEffects, generateRelationshipSummary } from "./engine.js";
+import { getKnownCharacters, getCharacterRelationship, applyRelationshipEffects, generateRelationshipSummary, sanitizeChatDeltaEvaluation, applyChatDeltaEvaluation } from "./engine.js";
 import { getCharacterById } from "../data/characters.js";
 import { getStageById } from "../data/stages.js";
 import { getIdentityTypeById } from "../data/identityTypes.js";
 import { getPersonalityByAnyId } from "../data/identityPersonalities.js";
+import { statDescriptions, skillDescriptions, relationshipDimensionDescriptions, formatStatDefinitionLines } from "../data/statDefinitions.js";
 
 const MAX_CHAT_HISTORY = 20;
-const CHATBOT_RELATIONSHIP_DIMENSION_FALLBACK = "closeness";
-const CHATBOT_RELATIONSHIP_GAIN_AMOUNT = 1;
 const CHARACTER_CONTEXT_ERROR = "角色資料不足，暫時不能聊天。";
 const IDENTITY_MISMATCH_ERROR = "角色回覆不符合人物設定，請再試一次。";
 
@@ -226,8 +230,6 @@ function normalizeIdentityForChat(identityTypeId, roleLabel = "") {
   if (identityTypeId === "family_elder") return "family_parent";
   if (identityTypeId === "family_peer") return "family_sibling";
   if (identityTypeId === "tutor") return "teacher";
-  if (identityTypeId === "community_adult") return "community_adult";
-  if (identityTypeId === "school_staff") return "school_staff";
   if (identityTypeId === "same_age_peer") return "same_age_peer";
   if (identityTypeId === "senior_student") return "senior_student";
   if (identityTypeId === "teacher") return "teacher";
@@ -243,14 +245,14 @@ function relationshipToPlayerFor(identityTypeId, roleLabel = "") {
   if (identityTypeId === "same_age_peer") return "classmate";
   if (identityTypeId === "senior_student") return "senior";
   if (identityTypeId === "teacher" || identityTypeId === "tutor") return "teacher";
-  if (identityTypeId === "school_staff") return "school_staff";
   return identityTypeId || "known_character";
 }
 
 function computeCharacterLifeStage(character, playerLifeStage) {
   const identityTypeId = character.generatedFromIdentityType;
   const ageGroup = character.ageGroup || "";
-  if (ageGroup === "成人" || ["family_elder", "teacher", "tutor", "school_staff", "community_adult"].includes(identityTypeId)) {
+  if (character.lifeStage) return character.lifeStage;
+  if (ageGroup === "成人" || ["family_elder", "teacher", "tutor"].includes(identityTypeId)) {
     return "adult";
   }
   if (identityTypeId === "senior_student") {
@@ -270,6 +272,7 @@ function currentAgeForLifeStage(lifeStage, stage) {
 }
 
 function currentGradeForCharacter(character, lifeStage, stage) {
+  if (character.currentGrade) return character.currentGrade;
   if (lifeStage === "adult") return null;
   if (character.generatedFromIdentityType === "senior_student") return lifeStage === "secondary" ? "中學生" : "高小";
   return stage?.grade || null;
@@ -291,7 +294,6 @@ function identityGuardText(identity) {
     same_age_peer: "same_age_peer / 同齡同學：你是玩家同年級或相近年級學生。可以談小息、課室、同學、老師、功課、活動、玩樂、測驗壓力。不可突然用成人職場語氣，不可知道家長內部安排，除非事件已經讓你知道。",
     senior_student: "senior_student / 高年級學生：你是高年級學生或風紀，比小一熟悉校園規則，但仍然是學生。不可像老師那樣全知，也不可像同齡小一那樣完全不熟學校。",
     teacher: "teacher / 老師或導師：你是成人教育者。可以談課堂、班規、觀察學生、提醒、鼓勵、安排活動。不可把自己說成學生，不可透露未公開劇情資訊。",
-    school_staff: "school_staff / 學校職員：你關注校園秩序、走廊、放學、辦公室、失物、物資、規則。你不是老師，也不是同學。",
     family_sibling: "family_sibling / 家中兄弟姊妹：必須按 currentAge / lifeStage 判斷。如果你是學生，可以有學生生活；如果已成人，就不能用小學生生活內容。不要只因為 identity 是 family 就當成家長。"
   };
   return map[identity] || "按 selectedCharacter 的身份保持一致，不要改扮演對象。";
@@ -323,7 +325,7 @@ function buildSelectedCharacterContext(character, s) {
       identityTypeId: rawIdentity,
       roleLabel: character.roleLabel,
       relationshipToPlayer: relationshipToPlayerFor(rawIdentity, character.roleLabel),
-      currentAge: currentAgeForLifeStage(lifeStage, stage),
+      currentAge: character.currentAge || currentAgeForLifeStage(lifeStage, stage),
       currentGrade: currentGradeForCharacter(character, lifeStage, stage),
       lifeStage,
       personalityId: character.personalityId,
@@ -360,7 +362,7 @@ function buildSelectedCharacterContext(character, s) {
       identity,
       roleLabel: character.roleLabel,
       relationshipToPlayer: relationshipToPlayerFor(rawIdentity, character.roleLabel),
-      currentAge: currentAgeForLifeStage(lifeStage, stage),
+      currentAge: character.currentAge || currentAgeForLifeStage(lifeStage, stage),
       currentGrade: currentGradeForCharacter(character, lifeStage, stage),
       lifeStage,
       personalityId: character.personalityId,
@@ -383,7 +385,8 @@ function getOrCreateThread(characterId, s) {
       chatHistory: [],
       smallChatMemorySummary: "",
       lastChattedWeek: null,
-      chatbotRelationshipGainThisWeek: null
+      chatDeltaAppliedThisWeek: null,
+      chatClosenessGainedThisWeek: null
     };
   }
   return s.chatbot.threads[characterId];
@@ -393,8 +396,37 @@ export function getChatThread(characterId, s) {
   return s.chatbot?.threads?.[characterId] || null;
 }
 
-function canGainRelationshipThisWeek(thread, currentWeek) {
-  return thread.chatbotRelationshipGainThisWeek !== currentWeek;
+// 防止同一角色喺同一週用聊天狂刷數值：每角色每週最多套用一次 LLM 判斷嘅 delta
+// （唔限制傾偈次數本身，淨係限制 statusDelta／skillExpDelta／relationshipDelta 套用次數）。
+function canApplyChatDeltaThisWeek(thread, currentWeek) {
+  return thread.chatDeltaAppliedThisWeek !== currentWeek;
+}
+
+function canGainClosenessThisWeek(thread, currentWeek) {
+  return thread.chatClosenessGainedThisWeek !== currentWeek;
+}
+
+// closeness 由 LLM 判斷嘅 playerToneTowardNpc（positive／neutral／negative）決定方向，
+// 但幅度固定 ±1，每個角色每週封頂一次改動（唔理係加定減）。
+function applyChatClosenessFromTone(characterId, closenessDelta, s) {
+  if (!closenessDelta) return { applied: false };
+  const thread = getOrCreateThread(characterId, s);
+  if (!canGainClosenessThisWeek(thread, s.currentWeek)) return { applied: false };
+
+  applyRelationshipEffects([{ characterId, dimension: "closeness", amount: closenessDelta }], s);
+  thread.chatClosenessGainedThisWeek = s.currentWeek;
+
+  s.actionRelationshipHistory = s.actionRelationshipHistory || [];
+  s.actionRelationshipHistory.push({
+    type: "chatbot_relationship_gain",
+    week: s.currentWeek,
+    characterId,
+    amount: closenessDelta,
+    dimension: "closeness",
+    reason: "player_chatted_with_unlocked_character"
+  });
+  if (s.actionRelationshipHistory.length > 100) s.actionRelationshipHistory = s.actionRelationshipHistory.slice(-100);
+  return { applied: true, amount: closenessDelta };
 }
 
 function formatMemoryLines(memories) {
@@ -419,6 +451,8 @@ export function buildCharacterChatPrompt(character, s, playerMessage, options = 
   if (!context) return null;
   const { selectedCharacter, gameState } = context;
   const rel = gameState.relationshipValue || {};
+  const statKeys = Object.keys(s.stats || {});
+  const skillKeys = Object.keys(s.skillExp || {});
   const extraReminder = options.identityReminder
     ? [
         ``,
@@ -433,7 +467,7 @@ export function buildCharacterChatPrompt(character, s, playerMessage, options = 
     `ChatbotPanel 中玩家選中的 selectedCharacterId 是唯一扮演對象。playerMessage 只是玩家對 selectedCharacter 說的話，不可以用 playerMessage 重新判斷你應該扮演誰。`,
     `你不能根據玩家訊息裡出現「媽媽」「爸爸」「老師」「同學」等字眼改扮演對象。你不能用最近 event NPC、action target、relationship target 或 generic 小學生 prompt 代替 selectedCharacter。`,
     `你不能替玩家說話，不能把自己的身份和玩家身份混在一起。你只能根據 selectedCharacter 的 identity、currentAge、currentGrade、lifeStage、personality、relationship、memory 回答。`,
-    `你不知道未發生的事件，也不知道未解鎖角色。你不能提到 AI、prompt、system、eventId、memoryTag、relationship point。你不能修改 core property，也不能修改 skillExp。`,
+    `你不知道未發生的事件，也不知道未解鎖角色。你不能提到 AI、prompt、system、eventId、memoryTag、relationship point。`,
     ``,
     `【selectedCharacter】`,
     `characterId: ${selectedCharacter.characterId}`,
@@ -481,10 +515,43 @@ export function buildCharacterChatPrompt(character, s, playerMessage, options = 
     `5. 如果玩家問超出 selectedCharacter 認知範圍的事，用 selectedCharacter 的語氣表示不知道，不要亂作。`,
     extraReminder,
     ``,
+    `【playerToneTowardNpc——每次都必須判斷，唔可以省略】`,
+    `你要判斷「玩家呢句說話，如果由 ${selectedCharacter.displayName} 呢個角色嘅角度睇，係 positive／neutral／negative」。`,
+    `positive：講開心事、關心佢、認同佢、認真傾偈。`,
+    `neutral：普通打招呼、講日常、純粹玩笑／頑皮／攞你玩（唔係認真惡意、對方唔會真係嬲），呢啲一律當 neutral，唔算 negative。`,
+    `negative：只有表面明顯睇得出係唔禮貌、侮辱、講對方嘅唔開心事、無視對方感受，先算 negative。有懷疑就揀 neutral，唔好亂揀 negative。`,
+    ``,
+    `【玩家屬性／技能——你可以根據呢次對話內容判斷係咪要小幅調整，但要合乎邏輯】`,
+    `statusDelta／skillExpDelta 反映嘅係「玩家自己」嘅心理感受同經驗值，同「${selectedCharacter.displayName} 中唔中意呢句說話」係兩件獨立嘅事，唔可以將兩者掛鈎。`,
+    `例如玩家講一啲 ${selectedCharacter.displayName} 唔中意嘅嘢（例如玩笑、頂嘴、講反話），可能純粹係玩家覺得好玩、覺得自己好醒先咁講，玩家自己嘅快樂／自信完全可以係上升，唔可以自動假設「NPC 唔中意 = 玩家會唔開心／冇自信／有壓力」。`,
+    `反過嚟講，玩家講一啲 ${selectedCharacter.displayName} 中意聽嘅嘢，都唔一定代表玩家自己覺得開心（可能純粹敷衍）。`,
+    `淨係喺對話內容本身有明確線索反映玩家自己嘅心理狀態時先改 statusDelta（例如玩家自己講開心事、分享興趣、認真討論功課、講自己嘅傷感或者尷尬），純粹打招呼、無意義嘅話唔應該有任何 statusDelta／skillExpDelta。`,
+    `每個數值 amount 必須係整數，最少 -2，最多 +2，唔可以超過呢個範圍。`,
+    `可用 core status keys 同意思：`,
+    ...formatStatDefinitionLines(statKeys, statDescriptions),
+    `可用 skillExp keys 同意思：`,
+    ...formatStatDefinitionLines(skillKeys, skillDescriptions),
+    ``,
+    `【${selectedCharacter.displayName} 對玩家嘅 relationship——closeness 以外嘅維度，你可以判斷係咪要小幅調整】`,
+    `relationshipDelta 只可以影響 selectedCharacter 呢個角色，唔可以影響其他角色。`,
+    `closeness 唔使你直接判斷數值——由上面嘅 playerToneTowardNpc 自動決定方向，唔可以喺 relationshipDelta 出現 closeness。`,
+    `可用 relationship dimension 同意思（closeness 除外）：`,
+    ...formatStatDefinitionLines(Object.keys(relationshipDimensionDescriptions).filter(d => d !== "closeness"), relationshipDimensionDescriptions),
+    ``,
     `【playerMessage】`,
     `玩家啱啱對 selectedCharacter 說：「${playerMessage}」`,
     ``,
-    `請只以 selectedCharacter「${selectedCharacter.displayName}」身份直接回覆玩家：`
+    `只回傳合法 JSON，不要 markdown，不要額外文字：`,
+    `{`,
+    `  "reply": "以 ${selectedCharacter.displayName} 身份直接回覆玩家嘅說話內容",`,
+    `  "playerToneTowardNpc": "positive",`,
+    `  "statusDelta": { "快樂": 1 },`,
+    `  "skillExpDelta": { "朗誦": 1 },`,
+    `  "relationshipDelta": [ { "dimension": "trust", "amount": 1 } ],`,
+    `  "reasonForDev": "只給 dev mode 看，不給玩家看"`,
+    `}`,
+    `playerToneTowardNpc 必須係 "positive"／"neutral"／"negative" 三選一，唔可以省略。`,
+    `statusDelta／skillExpDelta／relationshipDelta 冇需要改動就用空物件／空陣列，唔可以省略呢啲 key。`
   ].join("\n");
 }
 
@@ -501,27 +568,31 @@ export function appendCharacterReply(characterId, text, s) {
   thread.lastChattedWeek = s.currentWeek;
 }
 
-// 有效聊天 session 完成之後先 call 呢個：每個角色每週最多 +1，AI 回覆本身唔會直接決定加幾多分
-export function grantChatbotRelationshipGain(characterId, s) {
+// 有效聊天 session 完成之後先 call 呢個：每個角色每週最多套用一次 LLM 判斷嘅 statusDelta／skillExpDelta／
+// relationshipDelta（防止聊天狂刷數值），sanitize／clamp 邏輯同 opening event free-input 共用一套。
+export function applyChatDeltaIfEligible(characterId, sanitized, s) {
   const thread = getOrCreateThread(characterId, s);
-  if (!canGainRelationshipThisWeek(thread, s.currentWeek)) return { granted: false };
+  const hasAnyDelta = Object.keys(sanitized.statusDelta || {}).length
+    || Object.keys(sanitized.skillExpDelta || {}).length
+    || (sanitized.relationshipDelta || []).length;
+  if (!hasAnyDelta || !canApplyChatDeltaThisWeek(thread, s.currentWeek)) return { applied: false };
 
-  const character = getCharacterById(characterId, s);
-  const dimension = character?.relationshipDimensions?.[0] || CHATBOT_RELATIONSHIP_DIMENSION_FALLBACK;
-  applyRelationshipEffects([{ characterId, dimension, amount: CHATBOT_RELATIONSHIP_GAIN_AMOUNT }], s);
-  thread.chatbotRelationshipGainThisWeek = s.currentWeek;
+  const applied = applyChatDeltaEvaluation(characterId, sanitized, s);
+  thread.chatDeltaAppliedThisWeek = s.currentWeek;
 
   s.actionRelationshipHistory = s.actionRelationshipHistory || [];
-  s.actionRelationshipHistory.push({
-    type: "chatbot_relationship_gain",
-    week: s.currentWeek,
-    characterId,
-    amount: CHATBOT_RELATIONSHIP_GAIN_AMOUNT,
-    dimension,
-    reason: "player_chatted_with_unlocked_character"
+  applied.relationshipRecords.forEach(record => {
+    s.actionRelationshipHistory.push({
+      type: "chatbot_relationship_gain",
+      week: s.currentWeek,
+      characterId,
+      amount: record.appliedAmount,
+      dimension: record.dimension,
+      reason: "player_chatted_with_unlocked_character"
+    });
   });
-  if (s.actionRelationshipHistory.length > 100) s.actionRelationshipHistory.shift();
-  return { granted: true, dimension, amount: CHATBOT_RELATIONSHIP_GAIN_AMOUNT };
+  if (s.actionRelationshipHistory.length > 100) s.actionRelationshipHistory = s.actionRelationshipHistory.slice(-100);
+  return { applied: true, ...applied };
 }
 
 function textHasAny(text, patterns) {
@@ -553,8 +624,8 @@ export function detectIdentityMismatchResponse(text, context) {
     /我(?:要|會)?同你(?:爸爸|媽媽|家長)(?:講|傾)/
   ];
 
-  if (["adult", "family_parent", "teacher", "school_staff", "community_adult"].includes(selected.lifeStage)
-    || ["family_parent", "teacher", "school_staff", "community_adult"].includes(selected.identity)) {
+  if (["adult", "family_parent", "teacher"].includes(selected.lifeStage)
+    || ["family_parent", "teacher"].includes(selected.identity)) {
     return textHasAny(reply, studentSelfPatterns);
   }
   if (selected.identity === "same_age_peer") {
@@ -563,7 +634,7 @@ export function detectIdentityMismatchResponse(text, context) {
   if (selected.identity === "senior_student") {
     return textHasAny(reply, teacherParentPatterns) || /我(?:係|是)(?:小一|同班同學)/.test(reply);
   }
-  if (selected.identity === "teacher" || selected.identity === "school_staff") {
+  if (selected.identity === "teacher") {
     return textHasAny(reply, studentSelfPatterns);
   }
   return false;
@@ -592,11 +663,6 @@ export function getChatbotTypingText(character) {
       `${displayName} 正在回覆`,
       `${displayName} 看完訊息，正在打字`,
       `${displayName} 正在想一個合適回覆`
-    ],
-    school_staff: [
-      `${displayName} 正在回覆`,
-      `${displayName} 看完訊息，正在打字`,
-      `${displayName} 正在簡短回覆你`
     ]
   };
   const list = pools[identity] || [`${displayName} 正在回覆`, `${displayName} 正在打字`, `${displayName} 正在諗點答你`];
@@ -663,8 +729,149 @@ export async function testApiKeyConnection(providerId, apiKey, model) {
   return callChatbotRelay(providerId, trimmedKey, trimmedModel, "Reply OK only.", "test");
 }
 
-// 完整流程：組 prompt → BYOK relay（用玩家自己嘅 key + model）→ 更新 chat history → 如果係有效
-// session 先加 relationship。冇 key／冇 model／API error／空訊息一律唔會改任何 relationship／memory／property。
+function parseStrictJsonObject(text) {
+  const raw = (text || "").trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/```$/i, "").trim();
+  const start = raw.indexOf("{");
+  const end = raw.lastIndexOf("}");
+  if (start < 0 || end < start) return null;
+  try {
+    return JSON.parse(raw.slice(start, end + 1));
+  } catch {
+    return null;
+  }
+}
+
+function buildActiveMessageEvaluationPrompt(character, activeMessage, playerFreeReply, s) {
+  const identity = getIdentityTypeById(character.generatedFromIdentityType);
+  const personality = getPersonalityByAnyId(character.personalityId, character.generatedFromIdentityType);
+  const relationship = generateRelationshipSummary(character.id, s);
+  return [
+    "你係香港小學生活模擬器的 active message reply evaluator。",
+    "你只可以評估玩家對一條已由作者撰寫的 NPC 主動訊息的第一句回覆。",
+    "你不可以創作新 active message，不可以開新事件，不可以改 core property，不可以改 skillExp。",
+    "你必須保持同一個 NPC 身份，不可以代替其他角色說話。",
+    "relationshipDelta 只能是 -1、0、1。",
+    "",
+    `NPC: ${character.name}`,
+    `identity: ${character.generatedFromIdentityType} (${identity?.label || ""})`,
+    `personality: ${personality?.label || character.defaultTone || ""}`,
+    `role: ${character.roleLabel || ""}`,
+    `lifeStage: ${s.stageId}`,
+    `relationship closeness: ${relationship?.dimensions?.find(d => d.dimension === "closeness")?.value ?? 0}`,
+    "",
+    "作者訊息：",
+    `場景：${activeMessage.scene || ""}`,
+    `NPC訊息：${activeMessage.messageText || ""}`,
+    "",
+    `玩家自由回覆：${playerFreeReply}`,
+    "",
+    "只回傳合法 JSON，不要 markdown，不要額外文字：",
+    "{",
+    '  "npcFollowUp": "角色自然回覆文字",',
+    '  "relationshipDelta": -1,',
+    '  "resultText": "玩家可見的結果小句",',
+    '  "reasonForDev": "只給 dev mode 看，不給玩家看"',
+    "}"
+  ].join("\n");
+}
+
+export async function evaluateActiveMessageReplyWithApi(character, activeMessage, playerFreeReply, s, options = {}) {
+  const trimmed = (playerFreeReply || "").trim();
+  if (!trimmed) return { ok: false, error: "請先輸入一句回覆。" };
+  const provider = getSelectedProvider();
+  const apiKey = getApiKey(provider);
+  if (!apiKey) return { ok: false, error: "請先設定 API key。" };
+  const model = getSelectedModel(provider);
+  if (!model) return { ok: false, error: "請先揀或者輸入一個 model id。" };
+
+  const prompt = buildActiveMessageEvaluationPrompt(character, activeMessage, trimmed, s);
+  const result = await callChatbotRelay(provider, apiKey, model, prompt, "chat", character.id, options.signal || null);
+  if (!result.ok) return { ok: false, error: result.error };
+  const parsed = parseStrictJsonObject(result.reply);
+  if (!parsed || ![-1, 0, 1].includes(parsed.relationshipDelta) || !parsed.npcFollowUp || !parsed.resultText) {
+    return { ok: false, error: "暫時未能理解這次回覆，請再試一次。" };
+  }
+  return {
+    ok: true,
+    evaluation: {
+      npcFollowUp: String(parsed.npcFollowUp).slice(0, 220),
+      relationshipDelta: parsed.relationshipDelta,
+      resultText: String(parsed.resultText).slice(0, 180),
+      reasonForDev: parsed.reasonForDev ? String(parsed.reasonForDev).slice(0, 220) : ""
+    }
+  };
+}
+
+function buildOpeningEventEvaluationPrompt(context, playerFreeReply, s) {
+  const npc = context.npc;
+  const identity = npc ? getIdentityTypeById(npc.generatedFromIdentityType) : null;
+  const personality = npc ? getPersonalityByAnyId(npc.personalityId, npc.generatedFromIdentityType) : null;
+  const statKeys = Object.keys(s.stats || {});
+  const skillKeys = Object.keys(s.skillExp || {});
+  return [
+    "你係香港小學生活模擬器的 event free-input evaluator。",
+    "你只可以評估玩家對目前 authored event 的一句自由輸入。",
+    "你不可以創作新 event，不可以解鎖角色/地點/行動，不可以安排 follow-up event，不可以改 save 以外的資料。",
+    "你可以根據玩家回覆決定 core status、skillExp、當前 NPC relationship 的小幅變化。",
+    "每個數值 amount 必須是整數，最少 -2，最多 +2。不要超過這個範圍。",
+    "relationshipDelta 只可以影響當前 NPC，不可以影響其他角色。",
+    "",
+    `eventId: ${context.event.id}`,
+    `eventTitle: ${context.event.title || ""}`,
+    `variantId: ${context.variant.variantId}`,
+    `NPC: ${npc ? npc.name : context.npcDisplayName}`,
+    `identity: ${npc ? `${npc.generatedFromIdentityType} (${identity?.label || ""})` : "none"}`,
+    `personality: ${personality?.label || npc?.defaultTone || ""}`,
+    "",
+    "事件內容：",
+    ...(context.lines || []).map(line => `- ${line}`),
+    "",
+    "既有固定選項參考，不是唯一答案；但你必須從中選一個最接近玩家自由輸入的 choice id，作為日後人生片段回顧的 authored story anchor：",
+    ...(context.choices || []).map(choice => `- id=${choice.id}｜button=${choice.text}｜playerLine=${choice.playerLine || ""}`),
+    "",
+    `玩家自由輸入：${playerFreeReply}`,
+    "",
+    `可用 core status keys: ${statKeys.join(", ")}`,
+    `可用 skillExp keys: ${skillKeys.join(", ")}`,
+    "relationship dimension 可用：closeness, trust, respect, dependency, misunderstanding",
+    "",
+    "只回傳合法 JSON，不要 markdown，不要額外文字：",
+    "{",
+    '  "resultDialogue": { "speaker": "NPC名字或旁白", "text": "NPC或旁白自然回應" },',
+    '  "resultText": "玩家可見的結果小句",',
+    '  "reviewAnchorChoiceId": "必須係上面其中一個既有固定選項 id；只用作人生片段回顧 anchor，不代表玩家真的按了該按鈕",',
+    '  "statusDelta": { "快樂": 1 },',
+    '  "skillExpDelta": { "朗誦": 1 },',
+    '  "relationshipDelta": [ { "dimension": "closeness", "amount": 1 } ],',
+    '  "reasonForDev": "只給 dev mode 看，不給玩家看"',
+    "}"
+  ].join("\n");
+}
+
+export async function evaluateOpeningEventReplyWithApi(openingEventContext, playerFreeReply, s, options = {}) {
+  const trimmed = (playerFreeReply || "").trim();
+  if (!trimmed) return { ok: false, error: "請先輸入一句回覆。" };
+  if (!openingEventContext) return { ok: false, error: "找不到正在處理的事件。" };
+  const provider = getSelectedProvider();
+  const apiKey = getApiKey(provider);
+  if (!apiKey) return { ok: false, error: "請先設定 API key。" };
+  const model = getSelectedModel(provider);
+  if (!model) return { ok: false, error: "請先揀或者輸入一個 model id。" };
+
+  const prompt = buildOpeningEventEvaluationPrompt(openingEventContext, trimmed, s);
+  const selectedCharacterId = openingEventContext.npc?.id || null;
+  const result = await callChatbotRelay(provider, apiKey, model, prompt, "chat", selectedCharacterId, options.signal || null);
+  if (!result.ok) return { ok: false, error: result.error };
+  const parsed = parseStrictJsonObject(result.reply);
+  if (!parsed || !parsed.resultDialogue || !parsed.resultText) {
+    return { ok: false, error: "暫時未能理解這次回覆，請再試一次。" };
+  }
+  return { ok: true, evaluation: parsed };
+}
+
+// 完整流程：組 prompt → BYOK relay（用玩家自己嘅 key + model）→ parse／sanitize 返嚟嘅 JSON
+// （reply 文字 + statusDelta／skillExpDelta／relationshipDelta）→ 更新 chat history → 套用 delta。
+// 冇 key／冇 model／API error／空訊息／JSON parse 失敗一律唔會改任何 relationship／memory／property。
 export async function sendChatbotMessage(characterId, playerMessage, s, options = {}) {
   const trimmed = (playerMessage || "").trim();
   if (!trimmed) return { ok: false, error: "打啲嘢先啦。" };
@@ -689,20 +896,26 @@ export async function sendChatbotMessage(characterId, playerMessage, s, options 
   const prompt = buildCharacterChatPrompt(character, s, trimmed);
   if (!prompt) return { ok: false, error: CHARACTER_CONTEXT_ERROR };
   let result = await callChatbotRelay(provider, apiKey, model, prompt, "chat", character.id, options.signal || null);
-
   if (!result.ok) return { ok: false, error: result.error };
-  if (detectIdentityMismatchResponse(result.reply, context)) {
+
+  let sanitized = sanitizeChatDeltaEvaluation(parseStrictJsonObject(result.reply), s);
+  if (!sanitized) return { ok: false, error: "暫時未能理解呢次回覆，請再試一次。" };
+
+  if (detectIdentityMismatchResponse(sanitized.reply, context)) {
     const retryPrompt = buildCharacterChatPrompt(character, s, trimmed, { identityReminder: true });
     result = await callChatbotRelay(provider, apiKey, model, retryPrompt, "chat", character.id, options.signal || null);
     if (!result.ok) return { ok: false, error: result.error };
-    if (detectIdentityMismatchResponse(result.reply, context)) {
+    sanitized = sanitizeChatDeltaEvaluation(parseStrictJsonObject(result.reply), s);
+    if (!sanitized) return { ok: false, error: "暫時未能理解呢次回覆，請再試一次。" };
+    if (detectIdentityMismatchResponse(sanitized.reply, context)) {
       return { ok: false, error: IDENTITY_MISMATCH_ERROR, errorType: "identity_mismatch_response" };
     }
   }
 
   appendPlayerMessage(characterId, trimmed, s);
-  appendCharacterReply(characterId, result.reply, s);
-  const gain = grantChatbotRelationshipGain(characterId, s);
+  appendCharacterReply(characterId, sanitized.reply, s);
+  const closenessResult = applyChatClosenessFromTone(characterId, sanitized.closenessDelta, s);
+  const deltaResult = applyChatDeltaIfEligible(characterId, sanitized, s);
 
-  return { ok: true, reply: result.reply, relationshipGained: gain.granted };
+  return { ok: true, reply: sanitized.reply, closenessApplied: closenessResult.applied, deltaApplied: deltaResult.applied };
 }

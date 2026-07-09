@@ -126,49 +126,9 @@ export const identityTypes = [
     canUnlockLocationEvent: false
   },
   {
-    id: "school_staff",
-    label: "學校職員",
-    description: "校務處職員、圖書館職員、校工、午膳姨姨。",
-    canBeRandomAtStart: true,
-    canAppearInEvents: true,
-    relationshipDimensionsPriority: ["closeness", "respect"],
-    defaultAvailability: "medium",
-    allowedLocations: ["loc_shatin"],
-    commonSupportTypes: ["校內小支援", "服務機會"],
-    commonConflictTypes: ["唔守規矩"],
-    possibleRoles: ["圖書館職員", "校務處職員", "校工", "午膳姨姨"],
-    ageGroup: "成人",
-    messageFormality: "neutral",
-    authorityLevel: 1,
-    canForceSchedule: false,
-    canGiveAcademicGoal: false,
-    canGiveCompetitionInfo: false,
-    canUnlockHobby: false,
-    canUnlockLocationEvent: true
-  },
-  {
-    id: "community_adult",
-    label: "社區大人",
-    description: "茶餐廳店員、文具店老闆、屋苑保安、街坊叔叔姨姨。",
-    canBeRandomAtStart: true,
-    canAppearInEvents: true,
-    relationshipDimensionsPriority: ["closeness"],
-    defaultAvailability: "medium",
-    allowedLocations: ["loc_mongkok", "loc_sspk", "loc_causeway", "loc_tuenmun"],
-    commonSupportTypes: ["街坊人脈", "地區支線", "實用技能"],
-    commonConflictTypes: ["三分鐘熱度"],
-    possibleRoles: ["茶餐廳店員", "文具店老闆", "屋苑保安", "街坊叔叔", "街坊姨姨"],
-    ageGroup: "成人",
-    messageFormality: "casual",
-    authorityLevel: 0,
-    canForceSchedule: false,
-    canGiveAcademicGoal: false,
-    canGiveCompetitionInfo: true,
-    canUnlockHobby: true,
-    canUnlockLocationEvent: true
-  },
-  {
     id: "senior_student",
+    key: "senior_student",
+    aliasIds: ["identity_senior_student"],
     label: "高年級學生",
     description: "風紀、圖書館服務生、校隊師兄師姐。",
     canBeRandomAtStart: false,
@@ -191,5 +151,11 @@ export const identityTypes = [
 ];
 
 export function getIdentityTypeById(id) {
-  return identityTypes.find(t => t.id === id);
+  const normalizedId = id ? id.replace(/^identity_/, "") : id;
+  return identityTypes.find(t =>
+    t.id === id ||
+    t.id === normalizedId ||
+    t.key === id ||
+    (t.aliasIds || []).includes(id)
+  );
 }

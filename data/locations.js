@@ -14,7 +14,6 @@
 //   apModifier: number,                  // 響呢度做行動嘅 AP 增減（0 代表冇特別加減）
 //   riskTags: [string],
 //   goalInfluence: [ { directionId, weight } ],
-//   relationshipInfluence: [ { characterId, dimension, weight } ], // 響呢度同呢個角色互動時嘅額外加成
 //   unlockConditions: [condition]
 // }
 
@@ -27,7 +26,7 @@ export const locations = [
     lifeFlavor: "家庭日常、學校生活嘅根據地，最穩陣但都最少驚喜。",
     availableStages: ["stage_p1", "stage_p2", "stage_p3"],
     actionCategories: ["家庭", "學習", "朋友", "休息"],
-    uniqueActions: ["action_mall_stationery", "action_estate_playground", "action_cycle_track"],
+    uniqueActions: ["action_mall_stationery_trip"],
     commonCharacters: ["char_mom", "char_dad", "char_classmate", "char_teacher"],
     possibleEncounters: ["喺商場撞到媽媽行街", "喺樓下平台同同學打波", "假日一齊踩單車河"],
     locationResources: ["文具", "屋企支援", "同學日常"],
@@ -35,10 +34,6 @@ export const locations = [
     apModifier: 0,
     riskTags: [],
     goalInfluence: [{ directionId: "direction_family", weight: 2 }, { directionId: "direction_academic", weight: 1 }],
-    relationshipInfluence: [
-      { characterId: "char_mom", dimension: "closeness", weight: 1 },
-      { characterId: "char_classmate", dimension: "closeness", weight: 1 }
-    ],
     unlockConditions: []
   },
   {
@@ -49,7 +44,7 @@ export const locations = [
     lifeFlavor: "適合創意探索、社交、興趣路線，但消費誘惑大，荷包會跌得快。",
     availableStages: ["stage_p3"],
     actionCategories: ["興趣", "朋友", "支線"],
-    uniqueActions: ["action_window_shopping", "action_hobby_workshop", "action_street_performance"],
+    uniqueActions: [],
     commonCharacters: ["char_best_friend"],
     possibleEncounters: ["撞到興趣班同學仔一齊睇櫥窗", "街頭表演令你手痕想試"],
     locationResources: ["潮流資訊", "興趣靈感"],
@@ -57,7 +52,6 @@ export const locations = [
     apModifier: 0,
     riskTags: ["高消費"],
     goalInfluence: [{ directionId: "direction_creative", weight: 2 }, { directionId: "direction_social", weight: 1 }],
-    relationshipInfluence: [{ characterId: "char_best_friend", dimension: "closeness", weight: 1 }],
     unlockConditions: []
   },
   {
@@ -68,37 +62,32 @@ export const locations = [
     lifeFlavor: "適合朋友中心、自由玩樂、探索，人來人往、機會同誘惑都多。",
     availableStages: ["stage_p1", "stage_p2", "stage_p3"],
     actionCategories: ["朋友", "學習", "支線"],
-    uniqueActions: ["action_stationery_shop", "action_street_snack", "action_weird_rumor"],
-    commonCharacters: ["char_classmate", "char_tutor", "char_cha_chaan_teng"],
+    uniqueActions: [],
+    commonCharacters: ["char_classmate", "char_tutor"],
     possibleEncounters: ["聽到同學講神秘傳聞", "阿成請你食小點心", "補習 Miss 突然約你加堂"],
     locationResources: ["補習資源", "街頭小食", "文具同遊戲"],
     travelCost: 1,
     apModifier: 0,
     riskTags: ["人多手雜"],
     goalInfluence: [{ directionId: "direction_social", weight: 2 }, { directionId: "direction_freeplay", weight: 1 }],
-    relationshipInfluence: [
-      { characterId: "char_classmate", dimension: "closeness", weight: 1 },
-      { characterId: "char_cha_chaan_teng", dimension: "closeness", weight: 1 }
-    ],
     unlockConditions: []
   },
   {
     id: "loc_sspk",
     name: "深水埗",
     emoji: "🔧",
-    description: "電子零件、二手物品、街坊小店，臥虎藏龍嘅地方。",
-    lifeFlavor: "適合地區探索、實用技能、創意探索，隱世高手同街坊人情味都喺呢度。",
+    description: "電子零件、二手物品，臥虎藏龍嘅地方。",
+    lifeFlavor: "適合地區探索、實用技能、創意探索。",
     availableStages: ["stage_p1", "stage_p2", "stage_p3"],
     actionCategories: ["探索", "興趣", "支線"],
-    uniqueActions: ["action_visit_sspk", "action_fix_game_console", "action_neighbor_favor"],
-    commonCharacters: ["char_mystery_neighbor", "char_cha_chaan_teng"],
-    possibleEncounters: ["神秘街坊高手喺舖頭門口修嘢", "街坊阿婆想搵人幫手搬嘢"],
-    locationResources: ["二手電子零件", "修理技巧", "街坊人脈"],
+    uniqueActions: ["action_follow_area_clue"],
+    commonCharacters: [],
+    possibleEncounters: ["喺舖頭門口睇人修嘢", "街坊阿婆想搵人幫手搬嘢"],
+    locationResources: ["二手電子零件", "修理技巧"],
     travelCost: 1,
     apModifier: 0,
     riskTags: ["舊區路窄", "容易蕩失路"],
     goalInfluence: [{ directionId: "direction_explore", weight: 3 }, { directionId: "direction_creative", weight: 1 }],
-    relationshipInfluence: [{ characterId: "char_mystery_neighbor", dimension: "trust", weight: 2 }],
     unlockConditions: []
   },
   {
@@ -117,7 +106,6 @@ export const locations = [
     apModifier: 0,
     riskTags: ["節奏快", "容易眼花繚亂"],
     goalInfluence: [{ directionId: "direction_family", weight: 1 }],
-    relationshipInfluence: [{ characterId: "char_mom", dimension: "closeness", weight: 1 }],
     unlockConditions: [{ type: "statAtLeast", stat: "自信", amount: 45 }]
   }
 ];

@@ -11,7 +11,7 @@ import { getStageById } from "../data/stages.js";
 import { locations, getLocationById } from "../data/locations.js";
 import { getTermById, getNextTerm } from "../data/schedule.js";
 import { termGoals, stageGoals, lifeDirections, getGoalById, getDirectionById } from "../data/goals.js";
-import { getCharacterById, getAllGeneratedCharacters } from "../data/characters.js";
+import { getCharacterById, getAllGeneratedCharacters, getCharacterDisplayName } from "../data/characters.js";
 import { getPersonalityById } from "../data/identityPersonalities.js";
 import { resolveGrowthTendency } from "../data/endings.js";
 import { routeSeeds, getRouteSeedById, actionCategorySeedMap, characterRouteSeedMap } from "../data/routeSeeds.js";
@@ -28,6 +28,15 @@ import {
 import { hobbies, getHobbyById, MAX_ACTIVE_HOBBIES } from "../data/hobbies.js";
 import { competitions, getCompetitionById } from "../data/opportunities.js";
 import { getStoryScenesForEvents } from "../data/storyScenes.js";
+import { getOpeningEventById, getOpeningEventVariant } from "../data/openingEvents.js";
+import { pickOpeningEventForWeek, resetOpeningEventWeekState, resolveOpeningEventNpcId } from "../data/openingEventRegistry.js";
+import { findSixWeekReviewStory } from "../data/reviewStoryRegistry.js";
+import {
+  ACTIVE_MESSAGE_THRESHOLDS,
+  findAuthoredActiveMessage,
+  getActiveMessageLifeStageSet
+} from "../data/activeMessages.js";
+import { RELATIONSHIP_MILESTONE_THRESHOLDS, getRelationshipMilestoneReward } from "../data/relationshipMilestones.js";
 
 const CAPPED_STATS = ["學業", "社交", "創意", "體力", "自信", "快樂", "理智值", "家庭關係"];
 // 開局 cap 一律係 100（唔會隨機出 35、45 呢啲低上限），真正隨機嘅係「開局分配落 current 值嘅總點數池」
@@ -130,10 +139,383 @@ export function getCharacterRelationship(characterId, s = state) {
 }
 
 export function applyRelationshipEffects(effects = [], s = state) {
+  const changeRecords = [];
   effects.forEach(({ characterId, dimension, amount }) => {
+    if (!characterId || !dimension || !Number.isFinite(amount)) return;
     const rel = getCharacterRelationship(characterId, s);
-    rel[dimension] = clampStat((rel[dimension] ?? 0) + amount);
+    const before = rel[dimension] ?? 0;
+    const capped = applyRelationshipCap(characterId, dimension, before + amount, s);
+    rel[dimension] = capped.value;
+    const record = {
+      characterId,
+      dimension,
+      requestedAmount: amount,
+      appliedAmount: capped.value - before,
+      before,
+      after: capped.value,
+      capApplied: capped.capApplied,
+      cap: capped.cap
+    };
+    changeRecords.push(record);
+    if (dimension === "closeness" && capped.value > before) {
+      queueActiveMessagesForCharacter(characterId, before, capped.value, s);
+      applyRelationshipMilestoneRewardsForCharacter(characterId, before, capped.value, s);
+    }
   });
+  return changeRecords;
+}
+
+function ensureActiveMessageContainers(s = state) {
+  if (!Array.isArray(s.activeMessageQueue)) s.activeMessageQueue = [];
+  if (!s.activeMessageState || typeof s.activeMessageState !== "object") s.activeMessageState = {};
+  if (!Array.isArray(s.activeMessageHistory)) s.activeMessageHistory = [];
+}
+
+function getActiveMessageCharacterState(characterId, s = state) {
+  ensureActiveMessageContainers(s);
+  if (!s.activeMessageState[characterId]) {
+    s.activeMessageState[characterId] = {
+      triggeredThresholds: [],
+      pendingMessageIds: [],
+      lastActiveMessageWeek: null
+    };
+  }
+  const entry = s.activeMessageState[characterId];
+  if (!Array.isArray(entry.triggeredThresholds)) entry.triggeredThresholds = [];
+  if (!Array.isArray(entry.pendingMessageIds)) entry.pendingMessageIds = [];
+  return entry;
+}
+
+function getCharacterIdentity(character) {
+  return character?.generatedFromIdentityType || character?.identityTypeId || character?.identity || "";
+}
+
+export function getRelationshipRouteType(characterOrId, s = state) {
+  const character = typeof characterOrId === "string" ? getCharacterById(characterOrId, s) : characterOrId;
+  const identity = getCharacterIdentity(character);
+  if (identity === "family_elder" || identity === "family_peer" || identity === "family_parent" || identity === "family_sibling" || identity === "family_member") return "family";
+  if (identity === "teacher") return "teacher";
+  if (identity === "senior_student") return "mentor";
+  if (identity === "tutor") return "mentor";
+  if (identity === "school_staff") return "service_relation";
+  return "normal_friend";
+}
+
+function isFamilyCharacter(characterOrId, s = state) {
+  return getRelationshipRouteType(characterOrId, s) === "family";
+}
+
+export function getRelationshipCap(characterId, dimension = "closeness", s = state) {
+  if (dimension !== "closeness") return 100;
+  const character = getCharacterById(characterId, s);
+  return isFamilyCharacter(character, s) ? 100 : 80;
+}
+
+export function applyRelationshipCap(characterId, dimension, value, s = state) {
+  const floor = 0;
+  const cap = getRelationshipCap(characterId, dimension, s);
+  const clamped = Math.max(floor, Math.min(cap, value));
+  return { value: clampStat(clamped), cap, capApplied: value > cap || value < floor };
+}
+
+function isPrimaryStage(s = state) {
+  return ["stage_p1", "stage_p2", "stage_p3", "stage_p4", "stage_p5", "stage_p6"].includes(s.stageId);
+}
+
+function isCharacterEligibleForActiveMessage(character, s = state) {
+  if (!character || character.isActive === false) return false;
+  const knownByPlayer = character.knownByPlayer === true || (s.knownCharacters || []).includes(character.id) || character.knownStatus === "known";
+  const unlocked = character.unlockedInCharacterList === true || (s.knownCharacters || []).includes(character.id) || character.knownStatus === "known";
+  return knownByPlayer && unlocked;
+}
+
+function getActiveMessageThresholdsForCharacter(character, s = state) {
+  const identity = getCharacterIdentity(character);
+  const activeMessageIdentities = ["same_age_peer", "senior_student", "normal_friend", "special_friend"];
+  if (!activeMessageIdentities.includes(identity)) return [];
+  return isPrimaryStage(s) ? ACTIVE_MESSAGE_THRESHOLDS : ACTIVE_MESSAGE_THRESHOLDS;
+}
+
+function warnMissingActiveMessage(character, threshold, lifeStageSet) {
+  if (typeof console === "undefined" || !console.warn) return;
+  console.warn(
+    `[active-message] Missing authored active message content for characterId=${character?.id || "unknown"} ` +
+    `personalityId=${character?.personalityId || "unknown"} threshold=${threshold} lifeStageSet=${lifeStageSet}`
+  );
+}
+
+export function queueActiveMessagesForCharacter(characterId, beforeCloseness, afterCloseness, s = state) {
+  ensureActiveMessageContainers(s);
+  const character = getCharacterById(characterId, s);
+  if (!isCharacterEligibleForActiveMessage(character, s)) return [];
+  const characterState = getActiveMessageCharacterState(characterId, s);
+  const lifeStageSet = getActiveMessageLifeStageSet(s.stageId || character.lifeStage);
+  const relationshipRouteType = getRelationshipRouteType(character, s);
+  const queued = [];
+
+  getActiveMessageThresholdsForCharacter(character, s).forEach(threshold => {
+    if (!(beforeCloseness < threshold && afterCloseness >= threshold)) return;
+    if (characterState.triggeredThresholds.includes(threshold)) return;
+
+    const authored = findAuthoredActiveMessage({ character, threshold, lifeStageSet, relationshipRouteType });
+    if (!authored) {
+      warnMissingActiveMessage(character, threshold, lifeStageSet);
+      return;
+    }
+
+    const instanceId = `${authored.id}__${characterId}__${threshold}`;
+    if (s.activeMessageQueue.some(item => item.id === instanceId)) return;
+
+    const item = {
+      id: instanceId,
+      authoredMessageId: authored.id,
+      characterId,
+      threshold,
+      lifeStageSet,
+      relationshipRouteType,
+      status: "pending",
+      firstReplyResolved: false,
+      weekQueued: s.currentWeek,
+      totalWeekQueued: s.totalWeeksElapsed ?? 0
+    };
+    s.activeMessageQueue.push(item);
+    characterState.pendingMessageIds.push(instanceId);
+    characterState.triggeredThresholds.push(threshold);
+    queued.push(item);
+  });
+
+  return queued;
+}
+
+function hydrateActiveMessageInstance(item, s = state) {
+  const character = getCharacterById(item.characterId, s);
+  if (!character) return null;
+  const authored = findAuthoredActiveMessage({
+    character,
+    threshold: item.threshold,
+    lifeStageSet: item.lifeStageSet,
+    relationshipRouteType: item.relationshipRouteType
+  });
+  if (!authored || authored.id !== item.authoredMessageId) return null;
+  return {
+    ...authored,
+    instanceId: item.id,
+    characterId: item.characterId,
+    senderId: item.characterId,
+    title: authored.title || "主動訊息",
+    lines: [
+      authored.scene ? { type: "narrator", text: authored.scene } : null,
+      { type: "speech", text: authored.messageText }
+    ].filter(Boolean),
+    status: item.status,
+    firstReplyResolved: item.firstReplyResolved
+  };
+}
+
+export function getVisibleActiveMessageObjects(s = state) {
+  ensureActiveMessageContainers(s);
+  const visible = [];
+  const shownCharacterIds = new Set();
+  s.activeMessageQueue
+    .filter(item => item.status === "pending" || item.status === "awaiting_first_reply")
+    .sort((a, b) => (a.totalWeekQueued ?? 0) - (b.totalWeekQueued ?? 0))
+    .forEach(item => {
+      if (shownCharacterIds.has(item.characterId)) return;
+      const characterState = getActiveMessageCharacterState(item.characterId, s);
+      if (characterState.lastActiveMessageWeek === s.currentWeek) return;
+      const hydrated = hydrateActiveMessageInstance(item, s);
+      if (!hydrated) return;
+      visible.push(hydrated);
+      shownCharacterIds.add(item.characterId);
+    });
+  return visible;
+}
+
+function getActiveMessageInstance(instanceId, s = state) {
+  ensureActiveMessageContainers(s);
+  const item = s.activeMessageQueue.find(entry => entry.id === instanceId);
+  if (!item) return null;
+  const message = hydrateActiveMessageInstance(item, s);
+  return message ? { item, message } : null;
+}
+
+function activeMessageRelationshipResultText(characterId, record, s = state) {
+  const character = getCharacterById(characterId, s);
+  const name = character ? character.name : "對方";
+  if (record.capApplied && record.appliedAmount === 0 && record.requestedAmount > 0) {
+    return `${name}親近度已經到達目前階段上限。`;
+  }
+  if (record.appliedAmount > 0) return `${name}親近度 +${record.appliedAmount}`;
+  if (record.appliedAmount < 0) return `${name}親近度 ${record.appliedAmount}`;
+  return `${name}親近度沒有變化`;
+}
+
+export function resolveActiveMessageChoice(instanceId, choiceId, s = state) {
+  const resolved = getActiveMessageInstance(instanceId, s);
+  if (!resolved) return { ok: false, message: "找不到這條主動訊息。" };
+  const { item, message } = resolved;
+  if (item.firstReplyResolved || item.status === "resolved") {
+    return { ok: false, message: "這條訊息已經回覆過。" };
+  }
+  const choice = (message.choices || []).find(c => c.id === choiceId);
+  if (!choice) return { ok: false, message: "找不到這個回覆選項。" };
+  const requestedRelationshipDelta = [-1, 0, 1].includes(choice.relationshipDelta) ? choice.relationshipDelta : 0;
+  const relationshipBefore = getCharacterRelationship(item.characterId, s).closeness ?? 0;
+  const changes = applyRelationshipEffects([
+    { characterId: item.characterId, dimension: "closeness", amount: requestedRelationshipDelta }
+  ], s);
+  const relationshipChange = changes[0] || {
+    requestedAmount: requestedRelationshipDelta,
+    appliedAmount: 0,
+    before: relationshipBefore,
+    after: getCharacterRelationship(item.characterId, s).closeness ?? relationshipBefore,
+    capApplied: false
+  };
+
+  item.status = "resolved";
+  item.firstReplyResolved = true;
+  item.resolvedWeek = s.currentWeek;
+  item.resolvedTotalWeek = s.totalWeeksElapsed ?? 0;
+  item.choiceId = choice.id;
+  const characterState = getActiveMessageCharacterState(item.characterId, s);
+  characterState.pendingMessageIds = characterState.pendingMessageIds.filter(id => id !== instanceId);
+  characterState.lastActiveMessageWeek = s.currentWeek;
+
+  const historyRecord = {
+    type: "active_message_reply",
+    week: s.currentWeek,
+    termId: s.currentTermId,
+    characterId: item.characterId,
+    activeMessageId: message.id,
+    activeMessageInstanceId: instanceId,
+    threshold: item.threshold,
+    replyMode: "choice",
+    choiceId: choice.id,
+    requestedRelationshipDelta,
+    appliedRelationshipDelta: relationshipChange.appliedAmount,
+    capApplied: relationshipChange.capApplied,
+    relationshipBefore: relationshipChange.before,
+    relationshipAfter: relationshipChange.after,
+    resultText: choice.resultText,
+    appliedOnce: true
+  };
+  ensureActiveMessageContainers(s);
+  s.activeMessageHistory.push(historyRecord);
+
+  return {
+    ok: true,
+    playerLine: choice.playerLine,
+    npcFollowUp: choice.npcFollowUp,
+    resultText: choice.resultText,
+    relationshipResultText: activeMessageRelationshipResultText(item.characterId, relationshipChange, s),
+    historyRecord
+  };
+}
+
+export function resolveActiveMessageFreeReply(instanceId, playerFreeReply, evaluation, s = state) {
+  const resolved = getActiveMessageInstance(instanceId, s);
+  if (!resolved) return { ok: false, message: "找不到這條主動訊息。" };
+  const { item, message } = resolved;
+  if (item.firstReplyResolved || item.status === "resolved") {
+    return { ok: false, message: "這條訊息已經回覆過。" };
+  }
+  if (!evaluation || typeof evaluation !== "object") return { ok: false, message: "暫時未能理解這次回覆，請再試一次。" };
+  if (![-1, 0, 1].includes(evaluation.relationshipDelta)) return { ok: false, message: "暫時未能理解這次回覆，請再試一次。" };
+  if (!evaluation.npcFollowUp || !evaluation.resultText) return { ok: false, message: "暫時未能理解這次回覆，請再試一次。" };
+
+  const requestedRelationshipDelta = evaluation.relationshipDelta;
+  const relationshipBefore = getCharacterRelationship(item.characterId, s).closeness ?? 0;
+  const changes = applyRelationshipEffects([
+    { characterId: item.characterId, dimension: "closeness", amount: requestedRelationshipDelta }
+  ], s);
+  const relationshipChange = changes[0] || {
+    requestedAmount: requestedRelationshipDelta,
+    appliedAmount: 0,
+    before: relationshipBefore,
+    after: getCharacterRelationship(item.characterId, s).closeness ?? relationshipBefore,
+    capApplied: false
+  };
+
+  item.status = "resolved";
+  item.firstReplyResolved = true;
+  item.resolvedWeek = s.currentWeek;
+  item.resolvedTotalWeek = s.totalWeeksElapsed ?? 0;
+  item.replyMode = "api_free_input";
+  const characterState = getActiveMessageCharacterState(item.characterId, s);
+  characterState.pendingMessageIds = characterState.pendingMessageIds.filter(id => id !== instanceId);
+  characterState.lastActiveMessageWeek = s.currentWeek;
+
+  const historyRecord = {
+    type: "active_message_reply",
+    week: s.currentWeek,
+    termId: s.currentTermId,
+    characterId: item.characterId,
+    activeMessageId: message.id,
+    activeMessageInstanceId: instanceId,
+    threshold: item.threshold,
+    replyMode: "api_free_input",
+    choiceId: null,
+    requestedRelationshipDelta,
+    appliedRelationshipDelta: relationshipChange.appliedAmount,
+    capApplied: relationshipChange.capApplied,
+    relationshipBefore: relationshipChange.before,
+    relationshipAfter: relationshipChange.after,
+    resultText: evaluation.resultText,
+    appliedOnce: true
+  };
+  ensureActiveMessageContainers(s);
+  s.activeMessageHistory.push(historyRecord);
+  recordFreeInputReviewLog({
+    id: `active_message:${instanceId}`,
+    title: `你用自己的方式回覆：${getCharacterById(item.characterId, s)?.name || "對方"}`,
+    resultText: evaluation.resultText,
+    effectLines: [activeMessageRelationshipResultText(item.characterId, relationshipChange, s)],
+    tags: ["自己輸入", "主動訊息", getCharacterById(item.characterId, s)?.name || ""]
+  }, s);
+
+  return {
+    ok: true,
+    playerLine: playerFreeReply,
+    npcFollowUp: evaluation.npcFollowUp,
+    resultText: evaluation.resultText,
+    relationshipResultText: activeMessageRelationshipResultText(item.characterId, relationshipChange, s),
+    historyRecord
+  };
+}
+
+function getRelationshipMilestoneState(characterId, s = state) {
+  if (!s.relationshipMilestoneRewards || typeof s.relationshipMilestoneRewards !== "object") s.relationshipMilestoneRewards = {};
+  if (!s.relationshipMilestoneRewards[characterId]) {
+    s.relationshipMilestoneRewards[characterId] = { triggeredThresholds: [] };
+  }
+  const entry = s.relationshipMilestoneRewards[characterId];
+  if (!Array.isArray(entry.triggeredThresholds)) entry.triggeredThresholds = [];
+  return entry;
+}
+
+function applyRelationshipMilestoneRewardsForCharacter(characterId, beforeCloseness, afterCloseness, s = state) {
+  const character = getCharacterById(characterId, s);
+  if (!character) return [];
+  const milestoneState = getRelationshipMilestoneState(characterId, s);
+  const applied = [];
+  RELATIONSHIP_MILESTONE_THRESHOLDS.forEach(threshold => {
+    if (!(beforeCloseness < threshold && afterCloseness >= threshold)) return;
+    if (milestoneState.triggeredThresholds.includes(threshold)) return;
+    const reward = getRelationshipMilestoneReward(character, threshold);
+    if (!reward) return;
+    (reward.effects || []).forEach(effect => {
+      if (effect.type === "statChange") applyResourceChangeWithCap(effect.stat, effect.amount, s);
+    });
+    milestoneState.triggeredThresholds.push(threshold);
+    applied.push({ threshold, reward });
+    generateReviewLog({
+      type: "關係支援",
+      title: reward.title,
+      body: reward.body,
+      tags: ["關係里程碑", character.name]
+    }, s);
+  });
+  return applied;
 }
 
 export function addCharacterMemory(characterId, text, s = state) {
@@ -175,9 +557,13 @@ export function meetCharacter(characterId, source, s = state) {
   return !alreadyKnown;
 }
 
-// 每週檢查：長期冇互動嘅已知角色，關係會慢慢變淡／誤會值上升（唔會硬性懲罰，只係自然疏遠）
+// 每週檢查：長期冇互動嘅已知角色，關係會慢慢變淡／誤會值上升（唔會硬性懲罰，只係自然疏遠）。
+// 家庭溝通類行動代表玩家有主動同屋企人保持聯繫，即使冇直接 target 到某個特定家人（例如淨係 target
+// 咗媽媽），最近 18 個行動入面只要有做過「家庭溝通」，就當所有家庭角色都冇被冷落，唔會觸發自然疏遠。
 export function decayOrMaintainRelationships(s = state) {
+  const recentFamilyCommunication = s.recentActionHistory.slice(-18).some(h => h.category === "家庭溝通");
   getKnownCharacters(s).forEach(character => {
+    if (recentFamilyCommunication && isFamilyCharacter(character.id, s)) return;
     const ignored = checkCondition({ type: "recentlyIgnoredCharacter", characterId: character.id, weeks: 4 }, s);
     if (!ignored) return;
     const rel = getCharacterRelationship(character.id, s);
@@ -472,6 +858,10 @@ export function checkCondition(condition, s = state) {
       return s.selectedTermGoalId === condition.goalId;
     case "actionCategoryUsedAtLeast":
       return (s.categoryUsageCounts[condition.category] || 0) >= condition.amount;
+    case "actionFamilyUsedAtLeast":
+      return (s.actionFamilyUseCount[condition.family] || 0) >= condition.amount;
+    case "skillExpAtLeast":
+      return (s.skillExp[condition.skill] || 0) >= condition.amount;
     case "characterPersonalityIs":
       return getCharacterById(condition.characterId, s)?.personalityId === condition.personalityId;
     case "characterIdentityTypeIs":
@@ -586,96 +976,75 @@ export function incrementLocationFamiliarity(locationId, s = state, amount = 1) 
   s.locationFamiliarity[locationId] = (s.locationFamiliarity[locationId] || 0) + amount;
 }
 
-// 響某個地區逗留時，順便對嗰度嘅相關角色產生少少關係加成（代表「响佢哋嘅地頭撞到」）
-export function applyLocationRelationshipInfluence(locationId, s = state) {
-  const location = getLocationById(locationId);
-  if (!location) return;
-  (location.relationshipInfluence || []).forEach(inf => {
-    if (!s.knownCharacters.includes(inf.characterId)) return;
-    applyRelationshipEffects([{ characterId: inf.characterId, dimension: inf.dimension, amount: inf.weight }], s);
-  });
-}
-
 // ============================================================
 // 行動：篩選、AP、執行、分類、推薦
 // ============================================================
+// action tier progression：高 tier action 解鎖之後，應該用 replace 隱藏返低 tier 版本
+// （同一意圖嘅更好版本），避免 UI 同時顯示「待在同學附近」同「主動約同學」呢類重複選項。
+// side branch（唔同 trade-off 嘅選項）冇 replaces，會繼續 alongside 顯示。
+// 對某個 seed 字串做一個簡單、deterministic 嘅 hash，用嚟喺多個 eligible 角色之間做
+// 「同一週固定、下一週先變」嘅選擇，唔會因為刷新頁面而變
+function seededIndex(seedString, length) {
+  let hash = 0;
+  for (let i = 0; i < seedString.length; i++) {
+    hash = (hash * 31 + seedString.charCodeAt(i)) | 0;
+  }
+  return Math.abs(hash) % length;
+}
+
+// Action card 嘅 related person 必須經呢個 function resolve，唔可以直接讀 action.relatedCharacterId 嘅名。
+// 「已解鎖」嘅唯一判斷來源係 s.knownCharacters（同 getKnownCharacters 一致），
+// relatedCharacterId／eligibleIdentityTypes 淨係做 candidate filter，唔代表玩家已經識得呢個人。
+//
+// relatedPersonMode：
+//   "none"              —— 唔涉及角色，永遠冇 target
+//   "optional_unlocked"  —— 有 eligible 已解鎖角色就顯示＋加關係，冇就仍然顯示 action 但冇 name tag
+//   "requires_unlocked"  —— 必須有 eligible 已解鎖角色，冇就成張 card 隱藏
+// 冇寫 relatedPersonMode 嘅舊資料：有 relatedCharacterId 就當 "optional_unlocked"，冇就當 "none"
+export function resolveActionRelatedPerson(action, s = state) {
+  const mode = action.relatedPersonMode || (action.relatedCharacterId ? "optional_unlocked" : "none");
+  if (mode === "none") return null;
+
+  const known = getKnownCharacters(s);
+  let candidates;
+  if (action.eligibleIdentityTypes && action.eligibleIdentityTypes.length) {
+    candidates = known.filter(c => action.eligibleIdentityTypes.includes(c.generatedFromIdentityType));
+  } else if (action.relatedCharacterId) {
+    candidates = known.filter(c => c.id === action.relatedCharacterId);
+  } else {
+    candidates = [];
+  }
+  if (!candidates.length) return null;
+  if (candidates.length === 1) return candidates[0];
+
+  const seed = `${s.currentWeek}_${action.id}_${s.saveSeed ?? 0}`;
+  return candidates[seededIndex(seed, candidates.length)];
+}
+
 export function getAvailableActions(s = state) {
   const doneThisWeek = s.recentActionHistory
     .filter(h => h.week === s.currentWeek && h.termId === s.currentTermId)
     .map(h => h.actionId);
 
-  return actions.filter(a => {
+  const unlocked = actions.filter(a => {
     if (a.limitedWeeks && a.limitedWeeks.length && !a.limitedWeeks.includes(s.currentWeek)) return false;
     if (a.conflicts && a.conflicts.some(id => doneThisWeek.includes(id))) return false;
+    if (a.relatedPersonMode === "requires_unlocked" && !resolveActionRelatedPerson(a, s)) return false;
     return checkConditions(a.conditions, s);
   });
-}
 
-function getActiveTermGoal(s = state) {
-  return s.selectedTermGoalId ? getGoalById(s.selectedTermGoalId) : null;
-}
+  const replacedIds = new Set();
+  unlocked.forEach(a => (a.replaces || []).forEach(id => replacedIds.add(id)));
 
-// 心願相關嘅分類／角色，由 subGoals 反推（唔使逐個心願寫死邏輯）
-function getGoalRelatedCategories(goal) {
-  if (!goal || !goal.subGoals) return [];
-  const cats = new Set();
-  goal.subGoals.forEach(sg => {
-    if (sg.type === "actionCount") cats.add(sg.category);
-    if (sg.type === "actionCountAny") (sg.categories || []).forEach(c => cats.add(c));
-  });
-  return [...cats];
-}
-function getGoalRelatedCharacters(goal) {
-  if (!goal || !goal.subGoals) return [];
-  const ids = new Set();
-  goal.subGoals.forEach(sg => {
-    if (sg.type === "relationshipMax" || sg.type === "memoryCount") (sg.characterIds || []).forEach(id => ids.add(id));
-  });
-  return [...ids];
+  return unlocked.filter(a => !replacedIds.has(a.id));
 }
 
 export function getAvailableActionsByCategory(category, s = state) {
   const available = getAvailableActions(s);
-  const termGoal = getActiveTermGoal(s);
 
   if (category === "全部") return available;
-  if (category === "限時") return available.filter(a => a.limitedWeeks && a.limitedWeeks.length);
-  if (category === "已解鎖") return available.filter(a => (a.conditions || []).some(c => c.type === "hasFlag") || a.fromCharacterId);
-  if (category === "特殊傾向") return available.filter(a => (a.routeSeedEffects && a.routeSeedEffects.length) || (a.relatedCharacterId && characterRouteSeedMap[a.relatedCharacterId]));
   if (category === "地區限定") return available.filter(a => (a.conditions || []).some(c => c.type === "currentLocation"));
-  if (category === "最近關係") return available.filter(a => a.relatedCharacterId && s.knownCharacters.includes(a.relatedCharacterId));
-  if (category === "心願相關") {
-    const cats = getGoalRelatedCategories(termGoal);
-    const charIds = getGoalRelatedCharacters(termGoal);
-    return available.filter(a => cats.includes(a.category) || charIds.includes(a.relatedCharacterId));
-  }
   return available.filter(a => a.category === category);
-}
-
-export function getRecommendedActions(s = state, limit = 5) {
-  const available = getAvailableActions(s);
-  if (!available.length) return [];
-
-  const termGoal = getActiveTermGoal(s);
-  const goalCategories = getGoalRelatedCategories(termGoal);
-  const goalCharacters = getGoalRelatedCharacters(termGoal);
-  const direction = s.currentLifeDirection ? getDirectionById(s.currentLifeDirection) : null;
-
-  const scored = available.map(action => {
-    let score = 0;
-    if (goalCategories.includes(action.category)) score += 5;
-    if (goalCharacters.includes(action.relatedCharacterId)) score += 4;
-    if (s.stats.體力 < 25) score += action.category === "休息" ? 6 : -3;
-    if (s.stats.壓力 > 65) score += (action.category === "休息" || action.relatedCharacterId === "char_mom") ? 4 : 0;
-    if (direction && direction.requiredCategories[0] === action.category) score += 2;
-    if (action.relatedCharacterId && checkCondition({ type: "recentlyIgnoredCharacter", characterId: action.relatedCharacterId, weeks: 3 }, s)) score += 3;
-    if (s.urgentMessageIds.length > 0 && action.id === "action_reply_message") score += 8;
-    score += Math.max(0, 3 - action.apCost); // 傾向優先推薦低成本行動
-    return { action, score };
-  });
-
-  scored.sort((a, b) => b.score - a.score);
-  return scored.slice(0, limit).map(s2 => s2.action);
 }
 
 export function getLocationAvailableActions(locationId, s = state) {
@@ -811,28 +1180,65 @@ export function spendAP(action, s = state) {
   return s.ap >= action.apCost;
 }
 
-export function executeAction(actionId, s = state) {
+// explicitTargetId：UI render action card 嗰陣 resolve 咗嘅 target（可能係 characterId、或者 null 代表
+// card 冇顯示人物 tag）。呢度必須沿用 UI 嗰個決定，唔可以重新 random／重新 resolve，否則會出現
+// 「UI 顯示 A，但實際加 B」。如果冇傳（例如喺 UI 以外嘅地方 call executeAction），先 fallback 用
+// resolveActionRelatedPerson 自己算一次。
+export function executeAction(actionId, s = state, explicitTargetId = undefined) {
   const action = getActionById(actionId);
   if (!action) return { ok: false, reason: "行動唔存在" };
   if (!spendAP(action, s)) return { ok: false, reason: "AP 不足" };
 
   s.ap -= action.apCost;
   applyEffects(action.effects, s);
+  // skillExp 現階段只可以由 hobby class 週處理（applyHobbyWeeklyEffects）增加，
+  // weekly action 一律唔可以直接改 skillExp，所以呢度冇處理 action.skillExpEffects
 
   s.recentActionHistory.push({ actionId: action.id, category: action.category, week: s.currentWeek, termId: s.currentTermId });
   if (s.recentActionHistory.length > 40) s.recentActionHistory.shift();
 
   s.categoryUsageCounts[action.category] = (s.categoryUsageCounts[action.category] || 0) + 1;
+  if (action.actionFamily) s.actionFamilyUseCount[action.actionFamily] = (s.actionFamilyUseCount[action.actionFamily] || 0) + 1;
   if (!s.locationFamiliarity[s.locationId]) applyWillingnessToChange(3, s); // 第一次去呢個地區，會令你更願意試新嘢
   incrementLocationFamiliarity(s.locationId, s);
-  if (action.relatedCharacterId) markInteraction(action.relatedCharacterId, s);
+
+  // related person 效果一律要用返 UI 已經 resolve 咗、顯示緊嘅嗰個 target，唔可以重新 resolve，
+  // 亦都要再驗證一次呢個角色依然係已解鎖（防止極端 edge case 之間狀態變咗）
+  let relatedTarget = null;
+  if (explicitTargetId !== undefined) {
+    relatedTarget = explicitTargetId && s.knownCharacters.includes(explicitTargetId)
+      ? getCharacterById(explicitTargetId, s)
+      : null;
+  } else {
+    relatedTarget = resolveActionRelatedPerson(action, s);
+  }
+
+  if (relatedTarget) {
+    markInteraction(relatedTarget.id, s);
+    // relationshipIfTargeted：淨係喺 action card 有實際顯示緊呢位角色先套用，冇 target 就完全唔加
+    // 任何 specific relationship，只加 core property（action.effects 已經處理咗）
+    if (action.relationshipIfTargeted) {
+      const { dimension, amount } = action.relationshipIfTargeted;
+      applyRelationshipEffects([{ characterId: relatedTarget.id, dimension, amount }], s);
+      s.actionRelationshipHistory.push({
+        type: "action_relationship_gain",
+        week: s.currentWeek,
+        actionId: action.id,
+        characterId: relatedTarget.id,
+        displayedTargetName: relatedTarget.name,
+        amount,
+        dimension
+      });
+      if (s.actionRelationshipHistory.length > 100) s.actionRelationshipHistory.shift();
+    }
+  }
 
   (actionCategorySeedMap[action.category] || []).forEach(seedId => addRouteSeed(seedId, 1, s));
-  if (action.relatedCharacterId && characterRouteSeedMap[action.relatedCharacterId]) {
-    characterRouteSeedMap[action.relatedCharacterId].forEach(seedId => addRouteSeed(seedId, 1, s));
+  if (relatedTarget && characterRouteSeedMap[relatedTarget.id]) {
+    characterRouteSeedMap[relatedTarget.id].forEach(seedId => addRouteSeed(seedId, 1, s));
   }
   (action.routeSeedEffects || []).forEach(rs => addRouteSeed(rs.seedId, rs.amount, s));
-  checkOpportunityProgressOnAction(action, s);
+  // 比賽準備現階段一律嚟自 hobby class 週處理（syncOpportunityPrepFromHobbies），普通 action 唔再直接推進
 
   generateReviewLog({
     type: action.category,
@@ -1178,6 +1584,9 @@ function evaluateSubGoal(subGoal, s = state) {
     case "hobbyProgress":
       current = (s.hobbyProgress[subGoal.hobbyId] || {}).weeksAttended || 0;
       break;
+    case "hobbyWeeksAny":
+      current = Object.values(s.hobbyProgress || {}).reduce((sum, p) => sum + (p.weeksAttended || 0), 0);
+      break;
     case "reportGrade": {
       const latestCard = s.reportCards[s.reportCards.length - 1];
       const subj = latestCard?.subjectScores.find(sc => sc.id === subGoal.subjectId);
@@ -1432,6 +1841,7 @@ function applyWeeklyReset(s = state) {
   s.ap = s.maxAp;
   applyForcedScheduleWeekly(s);
   applyHobbyWeeklyEffects(s);
+  syncOpportunityPrepFromHobbies(s);
   checkOpportunityInfo(s);
   resolveOpportunityDeadlines(s);
   checkScheduleDueThisWeek(s);
@@ -1484,6 +1894,42 @@ export function generateReviewLog(entry, s = state) {
   if (s.reviewLogs.length > 200) s.reviewLogs.shift();
 }
 
+function safeReviewText(value, maxLength = 160) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  return text.length > maxLength ? `${text.slice(0, maxLength)}…` : text;
+}
+
+function hasSensitiveFreeInputPattern(text) {
+  const value = String(text || "");
+  return /(api[_-]?key|sk-[A-Za-z0-9_-]{12,}|AIza[0-9A-Za-z_-]{20,}|Bearer\s+[A-Za-z0-9._-]+)/i.test(value);
+}
+
+function safeFreeInputChoiceText(playerFreeReply) {
+  if (hasSensitiveFreeInputPattern(playerFreeReply)) return "（自己輸入）";
+  const preview = safeReviewText(playerFreeReply, 40);
+  return preview ? `（自己輸入：${preview}）` : "（自己輸入）";
+}
+
+function summarizeReviewEffects(lines = [], limit = 3) {
+  return lines.filter(Boolean).slice(0, limit).map(line => `・${safeReviewText(line, 48)}`).join("\n");
+}
+
+function recordFreeInputReviewLog({ id, title, resultText, effectLines, tags }, s = state) {
+  if (!id) return;
+  s.freeInputReviewLogIds = s.freeInputReviewLogIds || [];
+  if (s.freeInputReviewLogIds.includes(id)) return;
+  s.freeInputReviewLogIds.push(id);
+  const effectSummary = summarizeReviewEffects(effectLines || []);
+  generateReviewLog({
+    type: "自由回應",
+    title: safeReviewText(title, 80),
+    body: [safeReviewText(resultText, 160), effectSummary].filter(Boolean).join("\n"),
+    tags: (tags || []).filter(Boolean).slice(0, 4)
+  }, s);
+  if (s.freeInputReviewLogIds.length > 200) s.freeInputReviewLogIds.shift();
+}
+
 const CORE_STAT_KEYS_FOR_REVIEW = ["學業", "社交", "創意", "家庭關係", "快樂", "壓力", "體力", "自信"];
 
 // 學期／階段結算：唔淨係話完成咗咩，仲要展示晒所有方向嘅狀態，等玩家知道自己養緊邊種人
@@ -1533,20 +1979,432 @@ function attitudesUsedRarely(counts) {
 }
 
 // ============================================================
-// 人生片段回顧（每 6 週一次）—— 只顯示作者喺 storyScenes.js 寫好嘅 authored 內容，
-// engine 唔會自動生成任何劇情、對話或結果。如果過去 6 週冇任何已發生事件對應到 authored story scene，
+// W1–W6 opening event pool：每週最多揀一個 main event（data/openingEventRegistry.js 揀邊個），
+// 交俾 UI 用 dialogue popup 顯示 variant.openingDialogue + variant.playerChoices，
+// 呢度唔寫死任何 event/variant/choice 文字，一切嚟自 data/openingEvents.js
+// ============================================================
+// week 參數預設用 s.currentWeek，但可以指定「用邊一週嘅 event pool」——
+// 例如玩家喺 Week 1 撳「下一週」，想睇返 Week 1 自己嘅 event（唔係 advanceWeek() 已經 +1 之後嘅新週數）
+export function drawOpeningEventForWeek(s = state, week = s.currentWeek) {
+  resetOpeningEventWeekState(s);
+  const picked = pickOpeningEventForWeek(s, week);
+  if (!picked) { s.pendingOpeningEvent = null; return null; }
+
+  const { event, variant } = picked;
+  if (!variant.playerChoices || variant.playerChoices.length < 2) {
+    console.warn(`[opening event] ${event.id}/${variant.variantId} 少於 2 個 authored choices，冇按正常流程顯示`);
+    s.pendingOpeningEvent = null;
+    return null;
+  }
+
+  s.pendingOpeningEvent = { eventId: event.id, variantId: variant.variantId, week };
+  const npcId = resolveOpeningEventNpcId(event, variant, s);
+
+  return {
+    eventId: event.id,
+    variantId: variant.variantId,
+    senderId: npcId || undefined,
+    title: event.title,
+    lines: getOpeningDialogueLines(event, variant, s, npcId),
+    choices: variant.playerChoices.map(c => ({
+      text: c.buttonText || c.text,
+      id: c.id,
+      playerLine: c.playerLine || null,
+      playerLineType: c.playerLineType || "speech"
+    }))
+  };
+}
+
+function hasAnyMemory(s, tags) {
+  return tags.some(tag => (s.memories || []).includes(tag));
+}
+
+// npcId 呢度一定要用 resolveOpeningEventNpcId() 算出嚟嘅實際 character slot id（芷悠嘅 slot id
+// 係 "senior_friendly_girl_zhiyau"），唔可以再靠 authored 資料入面嘅 variant.npcIdHint 字串直接
+// 比對——authored pool 嗰個欄位淨係得個描述性代號（例如 "senior_student_friendly"），同真正嘅
+// character slot id 對唔上，會令呢個 continuity 分支永遠行唔到
+function getOpeningDialogueLines(event, variant, s, npcId) {
+  const w1ZhiyauMemories = [
+    "w1_senior_friendly_helped_with_handbook",
+    "w1_senior_friendly_taught_class_sign",
+    "w1_senior_friendly_confirmed_direction",
+    "w1_senior_friendly_followed_direction"
+  ];
+  if (event.id === "w5_recitation_info_channels" && npcId === "senior_friendly_girl_zhiyau") {
+    const alreadyMet = (s.knownCharacters || []).includes("senior_friendly_girl_zhiyau") || hasAnyMemory(s, w1ZhiyauMemories);
+    const continuityLine = alreadyMet
+      ? "你認得她，是之前在放學走廊幫你看過手冊的高年級女生。她這次沒有再替你看手冊，只是指了指報到位置，像在等你自己先認一認方向。"
+      : "你在報到位置附近見到一個高年級女生。她看了看通知板，又回頭確認你有沒有看見報到枱。";
+    return [
+      `旁白：${continuityLine}`,
+      ...(variant.openingDialogue || []).map(d => `${alreadyMet ? "芷悠" : d.speaker}：${d.text}`)
+    ];
+  }
+  const speakerLabel = resolveOpeningEventSpeakerLabel(variant, s, npcId);
+  const sceneIntroLines = event.sceneIntro ? [{ type: "narrator", text: event.sceneIntro }] : [];
+  const dialogueLines = (variant.openingDialogue || []).map(d => `${speakerLabel || d.speaker}：${d.text}`);
+  return [...sceneIntroLines, ...dialogueLines];
+}
+
+function resolveOpeningEventSpeakerLabel(variant, s, npcId) {
+  if (!npcId) return variant.knownDisplayName || variant.unknownDisplayName || variant.npcNameFallback || null;
+  const known = (s.knownCharacters || []).includes(npcId);
+  if (known && variant.knownDisplayName) return variant.knownDisplayName;
+  if (!known && variant.unknownDisplayName) return variant.unknownDisplayName;
+  return getCharacterDisplayName(npcId, s);
+}
+
+function applyOpeningEventChoiceUnlocks(choice, s) {
+  const unlocks = choice.unlocks || [];
+  unlocks.forEach(unlock => {
+    if (!unlock || unlock.type !== "unlockCharacter" || !unlock.characterId) return;
+    meetCharacter(unlock.characterId, unlock.reason || `喺「${unlock.sourceEventId || "事件"}」入面認識`, s);
+  });
+}
+
+export function getPendingOpeningEventContext(s = state) {
+  const pending = s.pendingOpeningEvent;
+  if (!pending) return null;
+  const event = getOpeningEventById(pending.eventId);
+  const variant = event ? getOpeningEventVariant(pending.eventId, pending.variantId) : null;
+  if (!event || !variant) return null;
+  const npcId = resolveOpeningEventNpcId(event, variant, s);
+  const npc = npcId ? getCharacterById(npcId, s) : null;
+  return {
+    pending,
+    event,
+    variant,
+    npcId,
+    npc,
+    npcDisplayName: npc ? (getCharacterDisplayName(npcId, s) || npc.name) : (variant.npcNameFallback || "對方"),
+    lines: getOpeningDialogueLines(event, variant, s, npcId),
+    choices: variant.playerChoices || []
+  };
+}
+
+export function clampEventFreeInputAmount(amount) {
+  const n = Math.round(Number(amount) || 0);
+  return Math.max(-2, Math.min(2, n));
+}
+
+// 開放式聊天（chatbot）用嘅版本：sanitize LLM 回傳嘅 { reply, statusDelta, skillExpDelta, relationshipDelta }，
+// 邏輯同 sanitizeEventFreeInputEvaluation 一致（濾走唔存在嘅 key、clamp 喺 -2~+2），但 chat 淨係需要
+// 一句 reply 文字，唔需要 resultDialogue/resultText 呢啲 authored-event 專用欄位。
+export function sanitizeChatDeltaEvaluation(evaluation, s = state) {
+  if (!evaluation || typeof evaluation !== "object") return null;
+  const reply = typeof evaluation.reply === "string" ? evaluation.reply.trim() : "";
+  if (!reply) return null;
+
+  const statusDelta = {};
+  Object.entries(evaluation.statusDelta || {}).forEach(([stat, amount]) => {
+    if (s.stats[stat] === undefined) return;
+    const clamped = clampEventFreeInputAmount(amount);
+    if (clamped) statusDelta[stat] = clamped;
+  });
+
+  const skillExpDelta = {};
+  Object.entries(evaluation.skillExpDelta || {}).forEach(([skill, amount]) => {
+    if (s.skillExp[skill] === undefined) return;
+    const clamped = clampEventFreeInputAmount(amount);
+    if (clamped) skillExpDelta[skill] = clamped;
+  });
+
+  // closeness 唔畀 LLM 自己揀 amount：淨係由 playerToneTowardNpc（positive／neutral／negative）呢個
+  // 分類欄位決定，正面／中性（包括玩笑、頑皮但唔算真係惡意）一律 +1，只有清楚、表面睇得出嘅負面
+  // 說話先 -1。呢個判斷同 statusDelta（玩家自己嘅心理感受）完全分開，唔可以互相假設。
+  // 只有清楚寫明 "negative" 先當負面；LLM 冇跟足 schema（大小寫唔同、漏咗呢個 key）一律當
+  // neutral 處理（fallback 做 +1），唔可以因為 LLM 冇答呢個字段就完全冇任何 closeness 變化。
+  const tone = typeof evaluation.playerToneTowardNpc === "string"
+    ? evaluation.playerToneTowardNpc.trim().toLowerCase()
+    : "";
+  const closenessDelta = tone === "negative" ? -1 : 1;
+
+  const relationshipDelta = [];
+  (evaluation.relationshipDelta || []).forEach(delta => {
+    const dimension = delta.dimension;
+    if (dimension === "closeness" || !RELATIONSHIP_DIMENSIONS.includes(dimension)) return;
+    const amount = clampEventFreeInputAmount(delta.amount);
+    if (amount) relationshipDelta.push({ dimension, amount });
+  });
+
+  return { reply: reply.slice(0, 400), statusDelta, skillExpDelta, relationshipDelta, closenessDelta };
+}
+
+// 將 sanitizeChatDeltaEvaluation 嘅結果實際套用落 state：屬性用返 applyResourceChangeWithCap（有 cap），
+// skillExp 直接加（同 hobby class 果套邏輯一致，冇上限），relationship 用返 applyRelationshipEffects（有 cap／milestone）。
+export function applyChatDeltaEvaluation(characterId, sanitized, s = state) {
+  const appliedStatusDelta = {};
+  Object.entries(sanitized.statusDelta || {}).forEach(([stat, amount]) => {
+    applyResourceChangeWithCap(stat, amount, s);
+    appliedStatusDelta[stat] = amount;
+  });
+  Object.entries(sanitized.skillExpDelta || {}).forEach(([skill, amount]) => {
+    s.skillExp[skill] = Math.max(0, (s.skillExp[skill] || 0) + amount);
+  });
+  const relationshipRecords = (sanitized.relationshipDelta || []).map(({ dimension, amount }) =>
+    applyRelationshipEffects([{ characterId, dimension, amount }], s)[0]
+  );
+  return { statusDelta: appliedStatusDelta, skillExpDelta: sanitized.skillExpDelta || {}, relationshipRecords };
+}
+
+function sanitizeEventFreeInputEvaluation(evaluation, s = state) {
+  if (!evaluation || typeof evaluation !== "object") return null;
+  const resultDialogue = evaluation.resultDialogue || {};
+  const resultDialogueText = typeof resultDialogue === "string" ? resultDialogue : resultDialogue.text;
+  if (!resultDialogueText || !evaluation.resultText) return null;
+
+  const statusDelta = {};
+  Object.entries(evaluation.statusDelta || {}).forEach(([stat, amount]) => {
+    if (s.stats[stat] === undefined) return;
+    const clamped = clampEventFreeInputAmount(amount);
+    if (clamped) statusDelta[stat] = clamped;
+  });
+
+  const skillExpDelta = {};
+  Object.entries(evaluation.skillExpDelta || {}).forEach(([skill, amount]) => {
+    if (s.skillExp[skill] === undefined) return;
+    const clamped = clampEventFreeInputAmount(amount);
+    if (clamped) skillExpDelta[skill] = clamped;
+  });
+
+  const relationshipDelta = [];
+  (evaluation.relationshipDelta || []).forEach(delta => {
+    const dimension = delta.dimension || "closeness";
+    if (!RELATIONSHIP_DIMENSIONS.includes(dimension)) return;
+    const amount = clampEventFreeInputAmount(delta.amount);
+    if (amount) relationshipDelta.push({ dimension, amount });
+  });
+
+  return {
+    resultDialogue: { speaker: resultDialogue.speaker || null, text: String(resultDialogueText).slice(0, 240) },
+    resultText: String(evaluation.resultText).slice(0, 220),
+    reviewAnchorChoiceId: evaluation.reviewAnchorChoiceId ? String(evaluation.reviewAnchorChoiceId).slice(0, 120) : "",
+    statusDelta,
+    skillExpDelta,
+    relationshipDelta,
+    reasonForDev: evaluation.reasonForDev ? String(evaluation.reasonForDev).slice(0, 240) : ""
+  };
+}
+
+function resolveFreeInputReviewAnchorChoice(variant, sanitizedEvaluation) {
+  const choices = variant?.playerChoices || [];
+  if (!choices.length) return null;
+  const requestedId = sanitizedEvaluation?.reviewAnchorChoiceId || "";
+  return choices.find(choice => choice.id === requestedId) || null;
+}
+
+function buildFreeInputReviewAdjustment(playerFreeReply, sanitizedEvaluation, anchorChoice) {
+  const hidden = hasSensitiveFreeInputPattern(playerFreeReply);
+  return {
+    mode: "api_adjustment_on_authored_context",
+    anchorChoiceId: anchorChoice?.id || null,
+    playerLinePreview: hidden ? "（自己輸入內容已隱藏）" : safeReviewText(playerFreeReply, 64),
+    resultText: safeReviewText(sanitizedEvaluation?.resultText, 160),
+    resultDialogueText: safeReviewText(sanitizedEvaluation?.resultDialogue?.text, 160)
+  };
+}
+
+function formatEventFreeInputOutcomeSummary({ statusDelta, skillExpDelta, relationshipRecords, npcDisplayName }, s = state) {
+  const lines = [];
+  const detailed = !!s.showDetailedNumbers;
+  Object.entries(statusDelta || {}).forEach(([stat, amount]) => {
+    lines.push(detailed ? `${stat} ${amount >= 0 ? "+" : ""}${amount}` : `你嘅${stat}${amount >= 0 ? "提升咗少少" : "跌咗少少"}`);
+  });
+  Object.entries(skillExpDelta || {}).forEach(([skill, amount]) => {
+    lines.push(detailed ? `${skill}經驗 ${amount >= 0 ? "+" : ""}${amount}` : `${skill}經驗${amount >= 0 ? "增加咗少少" : "減少咗少少"}`);
+  });
+  (relationshipRecords || []).forEach(record => {
+    if (record.capApplied && record.appliedAmount === 0 && record.requestedAmount > 0) {
+      lines.push(`${npcDisplayName}親近度已經到達目前階段上限。`);
+    } else if (detailed) {
+      lines.push(`${npcDisplayName}${record.dimension} ${record.appliedAmount >= 0 ? "+" : ""}${record.appliedAmount}`);
+    } else {
+      lines.push(`${npcDisplayName}對你嘅感覺有咗變化`);
+    }
+  });
+  return lines;
+}
+
+// choiceIndex 對應 drawOpeningEventForWeek() 建構個 popup 入面 choices 陣列嘅位置
+export function resolveOpeningEventChoice(choiceIndex, s = state) {
+  const pending = s.pendingOpeningEvent;
+  if (!pending) return { outcomeSummary: [] };
+  const variant = getOpeningEventVariant(pending.eventId, pending.variantId);
+  const choice = variant && variant.playerChoices ? variant.playerChoices[choiceIndex] : null;
+  if (!choice) return { outcomeSummary: [] };
+
+  const outcomeSummary = [];
+  const detailed = !!s.showDetailedNumbers;
+
+  Object.entries(choice.statusDelta || {}).forEach(([stat, amount]) => {
+    if (!amount) return;
+    if (s.stats[stat] === undefined) { console.warn(`[opening event] choice ${choice.id} 引用不存在嘅 stat「${stat}」`); return; }
+    s.stats[stat] = clampStat(s.stats[stat] + amount);
+    outcomeSummary.push(detailed ? `${stat} ${amount >= 0 ? "+" : ""}${amount}` : `你嘅${stat}${amount >= 0 ? "提升咗少少" : "跌咗少少"}`);
+  });
+
+  Object.entries(choice.skillExpDelta || {}).forEach(([skill, amount]) => {
+    if (!amount) return;
+    if (s.skillExp[skill] === undefined) { console.warn(`[opening event] choice ${choice.id} 引用不存在嘅 skill「${skill}」`); return; }
+    s.skillExp[skill] = Math.max(0, (s.skillExp[skill] || 0) + amount);
+    outcomeSummary.push(detailed ? `${skill}經驗 ${amount >= 0 ? "+" : ""}${amount}` : `${skill}經驗${amount >= 0 ? "增加咗少少" : "減少咗少少"}`);
+  });
+
+  const npcId = resolveOpeningEventNpcId(getOpeningEventById(pending.eventId), variant, s);
+  const hasExplicitUnlocks = Array.isArray(choice.unlocks);
+  if (npcId && !hasExplicitUnlocks) meetCharacter(npcId, `喺「${pending.eventId}」入面遇到`, s);
+  if (hasExplicitUnlocks) applyOpeningEventChoiceUnlocks(choice, s);
+  const npcDisplayName = npcId ? (getCharacterDisplayName(npcId, s) || getCharacterById(npcId, s)?.name || "對方") : (variant.npcNameFallback || "對方");
+  (choice.relationshipDelta || []).forEach(r => {
+    if (r.targetScope !== "currentSpeaker") {
+      console.warn(`[opening event] choice ${choice.id} 用咗未支援嘅 relationshipDelta.targetScope「${r.targetScope}」，跳過`);
+      return;
+    }
+    if (!npcId) { console.warn(`[opening event] choice ${choice.id} 冇對應到已生成角色，relationshipDelta 冇套用`); return; }
+    applyRelationshipEffects([{ characterId: npcId, dimension: r.dimension, amount: r.amount }], s);
+    outcomeSummary.push(detailed ? `${npcDisplayName}${r.dimension} ${r.amount >= 0 ? "+" : ""}${r.amount}` : `${npcDisplayName}對你嘅感覺有咗變化`);
+  });
+
+  if (npcId && choice.resultDialogue && choice.resultDialogue.text) {
+    addCharacterMemory(npcId, choice.resultDialogue.text, s);
+  }
+  (choice.memoryAdd || []).forEach(tag => {
+    if (!s.memories.includes(tag)) s.memories.push(tag);
+  });
+
+  recordStoryEvent({
+    eventId: pending.eventId,
+    eventTitle: (getOpeningEventById(pending.eventId) || {}).title || pending.eventId,
+    week: pending.week ?? s.currentWeek,
+    totalWeek: s.totalWeeksElapsed ?? 0,
+    location: s.locationId,
+    charactersInvolved: npcId ? [npcId] : [],
+    playerChoiceText: choice.text,
+    playerAttitudeTag: choice.attitudeId || null,
+    resultSummary: outcomeSummary.join("；"),
+    relationshipChanges: choice.relationshipDelta || [],
+    identityChanges: [],
+    scheduleChanges: [],
+    goalChanges: [],
+    routeSeedChanges: [],
+    followUpEventIds: [],
+    storyThreadId: pending.eventId,
+    variantId: pending.variantId,
+    choiceId: choice.id,
+    storyMemoryTags: choice.memoryAdd || []
+  }, s);
+
+  s.pendingOpeningEvent = null;
+  checkGoalProgress(s);
+  checkLifeDirection(s);
+
+  return { outcomeSummary, resultDialogue: choice.resultDialogue || null };
+}
+
+export function resolveOpeningEventFreeReply(playerFreeReply, evaluation, s = state) {
+  const context = getPendingOpeningEventContext(s);
+  if (!context) return { ok: false, message: "找不到正在處理的事件。" };
+  const sanitized = sanitizeEventFreeInputEvaluation(evaluation, s);
+  if (!sanitized) return { ok: false, message: "暫時未能理解這次回覆，請再試一次。" };
+
+  const { pending, event, variant, npcId, npcDisplayName } = context;
+  if (npcId) meetCharacter(npcId, `喺「${pending.eventId}」入面遇到`, s);
+  const reviewAnchorChoice = resolveFreeInputReviewAnchorChoice(variant, sanitized);
+
+  Object.entries(sanitized.statusDelta).forEach(([stat, amount]) => {
+    applyResourceChangeWithCap(stat, amount, s);
+  });
+  Object.entries(sanitized.skillExpDelta).forEach(([skill, amount]) => {
+    s.skillExp[skill] = Math.max(0, (s.skillExp[skill] || 0) + amount);
+  });
+  const relationshipRecords = npcId
+    ? applyRelationshipEffects(sanitized.relationshipDelta.map(delta => ({
+        characterId: npcId,
+        dimension: delta.dimension,
+        amount: delta.amount
+      })), s)
+    : [];
+
+  if (npcId && sanitized.resultDialogue.text) {
+    addCharacterMemory(npcId, sanitized.resultDialogue.text, s);
+  }
+
+  const outcomeSummary = [
+    sanitized.resultText,
+    ...formatEventFreeInputOutcomeSummary({
+      statusDelta: sanitized.statusDelta,
+      skillExpDelta: sanitized.skillExpDelta,
+      relationshipRecords,
+      npcDisplayName
+    }, s)
+  ].filter(Boolean);
+
+  recordStoryEvent({
+    eventId: pending.eventId,
+    eventTitle: event.title || pending.eventId,
+    week: pending.week ?? s.currentWeek,
+    totalWeek: s.totalWeeksElapsed ?? 0,
+    location: s.locationId,
+    charactersInvolved: npcId ? [npcId] : [],
+    playerChoiceText: safeFreeInputChoiceText(playerFreeReply),
+    playerAttitudeTag: "api_free_input",
+    resultSummary: outcomeSummary.join("；"),
+    relationshipChanges: sanitized.relationshipDelta,
+    identityChanges: [],
+    scheduleChanges: [],
+    goalChanges: [],
+    routeSeedChanges: [],
+    followUpEventIds: [],
+    storyThreadId: pending.eventId,
+    variantId: pending.variantId,
+    choiceId: reviewAnchorChoice?.id || "api_free_input",
+    storyMemoryTags: reviewAnchorChoice?.memoryAdd || [],
+    freeInputReview: buildFreeInputReviewAdjustment(playerFreeReply, sanitized, reviewAnchorChoice)
+  }, s);
+  recordFreeInputReviewLog({
+    id: `opening_event:${pending.eventId}:${pending.variantId}:${pending.week ?? s.currentWeek}`,
+    title: `你用自己的方式處理：${event.title || pending.eventId}`,
+    resultText: sanitized.resultText,
+    effectLines: outcomeSummary.slice(1),
+    tags: ["自己輸入", "事件", npcId ? npcDisplayName : ""]
+  }, s);
+
+  s.pendingOpeningEvent = null;
+  checkGoalProgress(s);
+  checkLifeDirection(s);
+
+  return {
+    ok: true,
+    playerLine: playerFreeReply,
+    outcomeSummary,
+    resultDialogue: {
+      speaker: sanitized.resultDialogue.speaker || npcDisplayName,
+      text: sanitized.resultDialogue.text
+    }
+  };
+}
+
+// ============================================================
+// 人生片段回顧（每 6 週一次）—— 只顯示作者喺 storyScenes.js／opening review story 寫好嘅 authored 內容，
+// engine 唔會自動生成任何劇情、對話或結果。如果過去 6 週冇任何已發生事件對應到 authored 內容，
 // 就唔會顯示故事（回傳 null，UI 會顯示「呢 6 週冇特別可以回顧嘅人生片段」）。
 // ============================================================
 export function generateSixWeekStoryScene(s = state) {
   const sinceWeek = (s.totalWeeksElapsed ?? 0) - 6;
-  const recentEventIds = s.storyEventLog
-    .filter(e => (e.totalWeek ?? 0) > sinceWeek)
-    .map(e => e.eventId);
+  const recentLogEntries = s.storyEventLog.filter(e => (e.totalWeek ?? 0) > sinceWeek);
+  const recentEventIds = recentLogEntries.map(e => e.eventId);
   s.lastStoryReviewWeek = s.totalWeeksElapsed ?? 0;
   if (!recentEventIds.length) return null;
 
   const candidates = getStoryScenesForEvents(recentEventIds).filter(sc => checkConditions(sc.conditions || [], s));
-  if (!candidates.length) return null;
+  if (!candidates.length) {
+    const openingScene = findSixWeekReviewStory(recentLogEntries, s);
+    if (openingScene) {
+      s.sixWeekStoryHistory.push(openingScene);
+      return openingScene;
+    }
+    return null;
+  }
 
   const maxPriority = Math.max(...candidates.map(sc => sc.priority ?? 0));
   const topPicks = candidates.filter(sc => (sc.priority ?? 0) === maxPriority);
@@ -1658,19 +2516,25 @@ function pickRandomFrom(arr) { return arr[Math.floor(Math.random() * arr.length)
 
 function computeSubjectScore(subject, s = state) {
   let statPart = 0;
-  const totalWeight = Object.values(subject.statWeights).reduce((a, b) => a + b, 0) || 1;
+  const totalStatWeight = Object.values(subject.statWeights).reduce((a, b) => a + b, 0) || 1;
   Object.entries(subject.statWeights).forEach(([stat, weight]) => {
     const cap = s.statCaps[stat] ?? 100;
     const normalized = ((s.stats[stat] ?? 0) / cap) * 100;
     statPart += normalized * weight;
   });
+  const statScore = statPart / totalStatWeight; // 0-100
+
   const recent = s.recentActionHistory.slice(-18);
-  let actionPart = 0;
+  const totalActionWeight = Object.values(subject.actionCategoryWeights).reduce((a, b) => a + b, 0) || 1;
+  let actionRaw = 0;
   Object.entries(subject.actionCategoryWeights).forEach(([category, weight]) => {
     const count = recent.filter(h => h.category === category).length;
-    actionPart += Math.min(count, 6) * weight;
+    actionRaw += Math.min(count, 6) * weight;
   });
-  const score = (statPart / totalWeight) * 0.6 + actionPart * 3;
+  const actionScore = Math.min(100, (actionRaw / (6 * totalActionWeight)) * 100); // 0-100，做齊 6 次相關行動先攞滿分
+
+  // 屬性(stat)長期累積係主要因素，最近行動只做輔助調整
+  const score = statScore * 0.8 + actionScore * 0.2;
   return Math.max(0, Math.min(100, Math.round(score)));
 }
 
@@ -1858,10 +2722,24 @@ function applyHobbyWeeklyEffects(s = state) {
   s.activeHobbies.forEach(hobbyId => {
     const hobby = getHobbyById(hobbyId);
     if (!hobby) return;
+
+    // 課後 AP 不足：呢週缺席，唔套用效果／skillExp，唔會將 class 放返 action list 俾玩家手動補
+    if (s.ap < hobby.weeklyApCost) {
+      generateReviewLog({
+        type: "興趣", title: `${hobby.name}呢週缺席`,
+        body: "課後時間唔夠，呢週冇去成，冇攞到今次嘅進度。",
+        tags: ["缺席"]
+      }, s);
+      return;
+    }
+
     s.ap = Math.max(0, s.ap - hobby.weeklyApCost);
     if (hobby.moneyCost) applyEffect({ type: "addMoney", amount: -hobby.moneyCost }, s);
     applyEffects(hobby.resourceEffects || [], s);
     (hobby.routeSeedEffects || []).forEach(rs => addRouteSeed(rs.seedId, rs.amount, s));
+    Object.entries(hobby.skillExpDelta || {}).forEach(([skill, amount]) => {
+      s.skillExp[skill] = (s.skillExp[skill] || 0) + amount;
+    });
 
     const progress = s.hobbyProgress[hobbyId] || (s.hobbyProgress[hobbyId] = { weeksAttended: 0 });
     progress.weeksAttended += 1;
@@ -1968,8 +2846,8 @@ export function joinOpportunity(compId, s = state) {
     source: comp.sourceCharacters[0] ? (getCharacterById(comp.sourceCharacters[0])?.name || "自己") : "自己",
     sourceCharacterId: comp.sourceCharacters[0] || null,
     checkWeek: (s.totalWeeksElapsed ?? 0) + comp.deadlineWeeks,
-    checkConditions: [{ type: "actionCategoryUsedAtLeast", category: comp.preparationRequirements.category, amount: comp.preparationRequirements.count }],
-    progressText: `截止前完成 ${comp.preparationRequirements.count} 次${comp.preparationRequirements.category}準備`,
+    checkConditions: [{ type: "hobbyProgressAtLeast", hobbyId: comp.preparationRequirements.hobbyId, amount: comp.preparationRequirements.count }],
+    progressText: `截止前參加「${getHobbyById(comp.preparationRequirements.hobbyId)?.name || comp.preparationRequirements.hobbyId}」${comp.preparationRequirements.count} 週`,
     onSuccessEffects: [],
     onSuccessReview: "",
     missResultText: comp.failResult || "沒有懲罰，只是錯過咗呢次機會。",
@@ -1985,7 +2863,7 @@ export function joinOpportunity(compId, s = state) {
     type: "competitionRole",
     givenByCharacterId: comp.sourceCharacters[0] || null,
     durationWeeks: comp.deadlineWeeks,
-    duties: [`完成 ${comp.preparationRequirements.count} 次${comp.preparationRequirements.category}準備`],
+    duties: [`參加「${getHobbyById(comp.preparationRequirements.hobbyId)?.name || comp.preparationRequirements.hobbyId}」${comp.preparationRequirements.count} 週`],
     benefits: ["比賽經驗", "相關 NPC 關係提升機會"],
     costs: [],
     relatedScheduleIds: [`schedule_opp_${compId}`],
@@ -2010,12 +2888,15 @@ export function getOpportunityInfoVisibility(s = state) {
   return s.knownOpportunities.map(getCompetitionById).filter(Boolean);
 }
 
-function checkOpportunityProgressOnAction(action, s = state) {
+// 比賽準備現階段一律嚟自 hobby class 每週出席（唔再由普通 action category 累積），
+// 喺 applyHobbyWeeklyEffects 之後、resolveOpportunityDeadlines 之前同步 prepCount
+function syncOpportunityPrepFromHobbies(s = state) {
   Object.entries(s.opportunityProgress).forEach(([compId, progress]) => {
     if (progress.status !== "active") return;
     const comp = getCompetitionById(compId);
-    if (!comp || comp.preparationRequirements.category !== action.category) return;
-    progress.prepCount += 1;
+    const hobbyId = comp?.preparationRequirements?.hobbyId;
+    if (!hobbyId) return;
+    progress.prepCount = (s.hobbyProgress[hobbyId] || {}).weeksAttended || 0;
     updateGoalProgress(`goal_opportunity_${compId}`, progress.prepCount, s);
   });
 }
@@ -2263,15 +3144,6 @@ export function getUrgentGoals(s = state, limit = 3) {
 
 // spec 要求嘅函式名，dashboard 淨係顯示最重要嘅幾個目標（同 getUrgentGoals 係同一份邏輯）
 export function getDashboardPriorityGoals(s = state, limit = 3) { return getUrgentGoals(s, limit); }
-
-export function getActionsForGoal(goalId, s = state) {
-  if (goalId.startsWith("goal_opportunity_")) {
-    const compId = goalId.replace("goal_opportunity_", "");
-    const comp = getCompetitionById(compId);
-    return comp ? actions.filter(a => a.category === comp.preparationRequirements.category) : [];
-  }
-  return [];
-}
 
 export function resolveGoalDeadline(goalId, s = state) {
   resolveOpportunityDeadlines(s);

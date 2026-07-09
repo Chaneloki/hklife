@@ -3,22 +3,24 @@
 
 import { getAllBackgroundCategories } from "../data/backgrounds.js";
 import { getCharacterById, getCharacterDisplayName } from "../data/characters.js";
+import { resolveCharacterIcon, DEFAULT_UNKNOWN_ICON, DEFAULT_CHILD_ICON } from "../data/characterIconManifest.js";
 import { getActionById, actionCategories } from "../data/actions.js";
 import { getLocationById } from "../data/locations.js";
 import { getStageCategoryMeta } from "../data/relationshipStages.js";
 import { termGoals, getGoalById, getDirectionById } from "../data/goals.js";
 import { getCompetitionById } from "../data/opportunities.js";
+import { MAX_ACTIVE_HOBBIES } from "../data/hobbies.js";
 import {
   CHAT_PROVIDERS, getEligibleChatCharacters, getChatThread,
   getSelectedProvider, getApiKey, maskApiKey, getSelectedModel, getModelDefaults
 } from "./chatbot.js";
 import {
-  getCurrentStage, getCurrentTerm, getCurrentLocation,
-  getUnlockedLocations, getKnownCharacters,
+  getCurrentStage, getCurrentTerm,
+  getKnownCharacters,
   getUnreadMessageObjects, getGoalProgressPercent, getGoalSubProgress, getAllActionsData,
   getActionTabs, getAvailableActionsByCategory, resolveActionRelatedPerson,
   getMessageVariantByRelationship, getAvailableChoicesByRelationship,
-  generateRelationshipSummary, getChoicePreview, getGoalStatus
+  generateRelationshipSummary, getChoicePreview, getGoalStatus, getVisibleActiveMessageObjects
 } from "./engine.js";
 
 const GOAL_CATEGORY_LABELS = {
@@ -50,6 +52,13 @@ function formatNumber(value) {
 // 「58/100」格式（冇空格，慳位、唔會斷行），資源列、checklist、獎勵 tag 全部用呢個
 function formatStat(current, target) {
   return `${formatNumber(current)}/${formatNumber(target)}`;
+}
+
+// gender 現階段淨係 player profile field："male"/"female" 先有顯示文字，null（舊存檔未補選）就乜都唔顯示
+function genderLabel(gender) {
+  if (gender === "male") return "男生";
+  if (gender === "female") return "女生";
+  return "";
 }
 
 const backgroundLabelLookup = buildBackgroundLabelLookup();
@@ -88,6 +97,20 @@ export function renderSetupScreen(selection, onSelect) {
     <input id="input-player-name" class="name-input" type="text" placeholder="輸入你嘅名 / 花名，留空會用隨機名" value="${selection.playerName || ""}" />
   `;
   container.appendChild(nameGroup);
+
+  const genderGroup = document.createElement("div");
+  genderGroup.className = "setup-group";
+  genderGroup.innerHTML = `
+    <h4>性別</h4>
+    <div class="option-row" id="gender-row">
+      <div class="option-chip ${selection.gender === "male" ? "selected" : ""}" data-gender="male">男生</div>
+      <div class="option-chip ${selection.gender === "female" ? "selected" : ""}" data-gender="female">女生</div>
+    </div>
+  `;
+  container.appendChild(genderGroup);
+  genderGroup.querySelectorAll("#gender-row .option-chip").forEach(btn => {
+    btn.addEventListener("click", () => onSelect("gender", btn.dataset.gender));
+  });
 
   ["family", "region"].forEach(key => {
     const list = categories[key];
@@ -164,7 +187,7 @@ export function renderStartingReport(state) {
   el.innerHTML = `
     <div class="card character-card">
       <div class="character-card-row">
-        <div class="character-avatar">🧒</div>
+        <img class="character-avatar" src="${DEFAULT_CHILD_ICON}" alt="" />
         <div>
           <div class="character-name">${state.playerName || "無名氏"}</div>
           <div class="character-sub">${backgroundLabelLookup[bg.regionId] || "香港"}成長 ・ ${backgroundLabelLookup[bg.familyId] || ""}</div>
@@ -202,7 +225,7 @@ export function renderTopDashboard(state) {
       <span class="dashboard-direction-badge">${direction ? direction.name : "未有明顯傾向"}</span>
     </div>
     <div class="dashboard-headline">${term ? term.name : ""} · 第${state.currentWeek}週</div>
-    <div class="dashboard-sub">距離學期結束：${weeksLeft} 週 ・ 📍 ${getCurrentLocation(state)?.name || "未知地區"}</div>
+    <div class="dashboard-sub">距離學期結束：${weeksLeft} 週</div>
   `;
 }
 
@@ -215,10 +238,10 @@ export function renderCharacterCard(state) {
 
   el.innerHTML = `
     <div class="character-card-row">
-      <div class="character-avatar">🧒</div>
+      <img class="character-avatar" src="${DEFAULT_CHILD_ICON}" alt="" />
       <div>
         <div class="character-name">${state.playerName || "無名氏"}　<span class="character-grade">${stage.grade}</span></div>
-        <div class="character-sub">${state.age} 歲 ・ ${backgroundLabelLookup[bg.regionId] || "香港"}成長</div>
+        <div class="character-sub">${state.age} 歲${genderLabel(state.gender) ? ` ・ ${genderLabel(state.gender)}` : ""} ・ ${backgroundLabelLookup[bg.regionId] || "香港"}成長</div>
       </div>
     </div>
     <div class="character-tags">
@@ -497,7 +520,9 @@ export function showGoalsOverlay() { document.getElementById("goals-overlay").cl
 export function hideGoalsOverlay() { document.getElementById("goals-overlay").classList.add("hidden"); }
 
 // ---------- 興趣班管理 modal ----------
-// 每週固定嘅得／失：resourceEffects（property 升跌）＋ skillExpDelta（技能經驗）＋ moneyCost（金錢）＋ weeklyApCost（AP）
+// 每張卡分段：A 標題列（icon／班名／狀態 badge）→ B 基本資料列（類型／AP／金錢）→
+// C 說明框 → D 效果 chip 區（可換行）→ E 補充規則列 → F 操作按鈕列（固定置底）。
+// 每週固定嘅得／失：resourceEffects（property 升跌）＋ skillExpDelta（技能經驗）
 function hobbyEffectTagsHtml(h) {
   const tags = [];
   (h.resourceEffects || []).forEach(e => {
@@ -508,8 +533,16 @@ function hobbyEffectTagsHtml(h) {
     tags.push(`<span class="effect-tag tag-positive">${skill}經驗+${amount}</span>`);
   });
   if (h.moneyCost) tags.push(`<span class="effect-tag tag-negative">金錢-${h.moneyCost}</span>`);
-  tags.push(`<span class="effect-tag">每週-${h.weeklyApCost} AP</span>`);
   return tags.join("");
+}
+
+function hobbyCostRowHtml(h) {
+  return `
+    <div class="hobby-cost-row">
+      <span class="hobby-cost-chip">📌 每週 -${h.weeklyApCost} AP</span>
+      ${h.moneyCost ? `<span class="hobby-cost-chip">💰 每週 -$${h.moneyCost}</span>` : ""}
+    </div>
+  `;
 }
 
 export function showHobbiesModal(state, allHobbies, knownComps, handlers, qualification = {}, overqualifiedReminders = []) {
@@ -518,13 +551,24 @@ export function showHobbiesModal(state, allHobbies, knownComps, handlers, qualif
     const hobby = allHobbies.find(h => h.id === hobbyId);
     if (!hobby) return "";
     return `
-      <div class="guide-card">
-        <div class="guide-card-header">
-          <span class="guide-card-icon">${hobby.icon}</span>
-          <div><div class="guide-card-name">${hobby.name}</div><span class="guide-card-cat">${hobby.category} ・ 每週 ${hobby.weeklyApCost} AP</span></div>
+      <div class="hobby-card hobby-card-active">
+        <div class="hobby-card-title-row">
+          <span class="hobby-card-icon">${hobby.icon}</span>
+          <span class="hobby-card-name">${hobby.name}</span>
+          <span class="hobby-status-badge hobby-status-active">已參加</span>
         </div>
-        <div class="action-effect-tags">${hobbyEffectTagsHtml(hobby)}</div>
-        <button class="btn-small btn-danger hobby-quit-btn" data-id="${hobby.id}">放棄</button>
+        <div class="hobby-meta-row">
+          <span class="hobby-meta-chip">${hobby.category}</span>
+        </div>
+        ${hobbyCostRowHtml(hobby)}
+        <div class="hobby-effects-row">${hobbyEffectTagsHtml(hobby)}</div>
+        <div class="hobby-rules-row">
+          <p>每週自動消耗 ${hobby.weeklyApCost} 課後 AP，唔使玩家逐週手動做。</p>
+          <p>退出後 ${hobby.quitCooldownWeeks} 週（約 6 個月）內唔可以再揀返呢班。</p>
+        </div>
+        <div class="hobby-actions-row">
+          <button class="btn-small btn-danger hobby-quit-btn" data-id="${hobby.id}">退出</button>
+        </div>
       </div>
     `;
   }).join("");
@@ -534,15 +578,35 @@ export function showHobbiesModal(state, allHobbies, knownComps, handlers, qualif
     .map(h => {
       const cooldown = state.quitHobbyCooldowns[h.id];
       const onCooldown = cooldown && state.totalWeeksElapsed < cooldown;
+      const atMax = state.activeHobbies.length >= MAX_ACTIVE_HOBBIES;
+      const disabled = onCooldown || atMax;
+      const badge = onCooldown
+        ? `<span class="hobby-status-badge hobby-status-cooldown">暫不可選</span>`
+        : atMax
+          ? `<span class="hobby-status-badge hobby-status-cooldown">已額滿</span>`
+          : "";
+      const btnLabel = onCooldown ? "暫時未可以再揀" : atMax ? `最多 ${MAX_ACTIVE_HOBBIES} 個興趣班` : "參加";
       return `
-        <div class="guide-card">
-          <div class="guide-card-header">
-            <span class="guide-card-icon">${h.icon}</span>
-            <div><div class="guide-card-name">${h.name}</div><span class="guide-card-cat">${h.category} ・ 每週 ${h.weeklyApCost} AP ・ $${h.moneyCost}</span></div>
+        <div class="hobby-card">
+          <div class="hobby-card-title-row">
+            <span class="hobby-card-icon">${h.icon}</span>
+            <span class="hobby-card-name">${h.name}</span>
+            ${badge}
           </div>
-          <div class="guide-tip-box">💡 ${h.description}</div>
-          <div class="action-effect-tags">${hobbyEffectTagsHtml(h)}</div>
-          <button class="btn-small btn-secondary hobby-join-btn" data-id="${h.id}" ${onCooldown ? "disabled" : ""}>${onCooldown ? "暫時未可以再揀" : "參加"}</button>
+          <div class="hobby-meta-row">
+            <span class="hobby-meta-chip">${h.category}</span>
+          </div>
+          ${hobbyCostRowHtml(h)}
+          <div class="hobby-desc-box">${h.description}</div>
+          <div class="hobby-effects-row">${hobbyEffectTagsHtml(h)}</div>
+          <div class="hobby-rules-row">
+            <p>每週自動消耗 ${h.weeklyApCost} 課後 AP。</p>
+            <p>退出後 ${h.quitCooldownWeeks} 週（約 6 個月）內唔可以再揀返呢班。</p>
+            <p>同時最多可以參加 ${MAX_ACTIVE_HOBBIES} 個興趣班。</p>
+          </div>
+          <div class="hobby-actions-row">
+            <button class="btn-small btn-secondary hobby-join-btn" data-id="${h.id}" ${disabled ? "disabled" : ""}>${btnLabel}</button>
+          </div>
         </div>
       `;
     }).join("");
@@ -571,10 +635,10 @@ export function showHobbiesModal(state, allHobbies, knownComps, handlers, qualif
 
   el.innerHTML = `
     <h5>目前參加緊</h5>
-    ${activeHtml || `<p class="muted-text">未有參加任何興趣班。</p>`}
+    <div class="hobby-card-list">${activeHtml || `<p class="muted-text">未有參加任何興趣班。</p>`}</div>
     <h5>可以參加</h5>
-    ${availableHtml || `<p class="muted-text">暫時冇更多可揀嘅興趣班。</p>`}
-    ${oppHtml ? `<h5>已知嘅比賽／機會</h5>${oppHtml}` : ""}
+    <div class="hobby-card-list">${availableHtml || `<p class="muted-text">暫時冇更多可揀嘅興趣班。</p>`}</div>
+    ${oppHtml ? `<h5>已知嘅比賽／機會</h5><div class="hobby-card-list">${oppHtml}</div>` : ""}
   `;
 
   el.querySelectorAll(".hobby-quit-btn").forEach(btn => btn.addEventListener("click", () => handlers.onQuit(btn.dataset.id)));
@@ -651,7 +715,7 @@ export function renderChatbotCharacterList(state, onSelectCharacter) {
     const lastChatted = thread?.lastChattedWeek ? `上次傾偈：第 ${thread.lastChattedWeek} 週` : "仲未傾過偈";
     return `
       <div class="chatbot-char-card" data-id="${c.id}">
-        <span class="guide-card-icon">${c.avatarEmoji || "🙂"}</span>
+        ${characterAvatarHtml(c, state)}
         <div class="chatbot-char-card-body">
           <div class="chatbot-char-name">${c.name}</div>
           <div class="chatbot-char-meta">${c.roleLabel}${summary ? ` ・ ${summary.stageLabel}` : ""} ・ ${lastChatted}</div>
@@ -673,11 +737,19 @@ function escapeHtml(value) {
     .replaceAll("'", "&#039;");
 }
 
+// 全部顯示角色頭像嘅地方（人物列表、Chatbot、對話 speaker、action related person tag……）
+// 一律要經呢個 helper（背後淨係用 resolveCharacterIcon()），唔可以自己砌一套 emoji fallback
+function characterAvatarHtml(character, state, extraClass = "") {
+  const src = character ? resolveCharacterIcon(character, state) : DEFAULT_UNKNOWN_ICON;
+  const alt = character ? escapeHtml(character.name || "") : "";
+  return `<img class="character-avatar ${extraClass}" src="${src}" alt="${alt}" />`;
+}
+
 export function renderChatbotThread(characterId, state, options = {}) {
   const character = getCharacterById(characterId, state);
   const thread = getChatThread(characterId, state);
   document.getElementById("chatbot-thread-header").innerHTML = character
-    ? `<div class="chatbot-char-name">${character.avatarEmoji || "🙂"} ${character.name}</div><div class="chatbot-char-meta">${character.roleLabel}</div>`
+    ? `${characterAvatarHtml(character, state)}<div class="chatbot-char-name">${character.name}</div><div class="chatbot-char-meta">${character.roleLabel}</div>`
     : "";
   const messagesEl = document.getElementById("chatbot-thread-messages");
   const history = thread?.chatHistory || [];
@@ -713,7 +785,9 @@ export function renderChatbotThread(characterId, state, options = {}) {
               <button class="btn-small btn-secondary chatbot-cancel-pending-btn" type="button">取消</button>
             </div>`
           : "";
-        return `<div class="chatbot-msg chatbot-msg-${m.role}"${pendingAttr}>${content}${actions}</div>`;
+        const isPlayer = m.role === "player";
+        const bubbleAvatar = isPlayer ? "" : characterAvatarHtml(character, state, "chatbot-msg-avatar");
+        return `<div class="chatbot-msg chatbot-msg-${m.role}"${pendingAttr}>${bubbleAvatar}<div class="chatbot-msg-bubble">${content}${actions}</div></div>`;
       }).join("")
     : `<p class="muted-text">同${character?.name || "佢"}講句嘢啦。</p>`;
   messagesEl.scrollTop = messagesEl.scrollHeight;
@@ -923,19 +997,6 @@ export function renderForcedScheduleBanner(state, onNegotiate) {
   });
 }
 
-export function renderLocationSwitcher(state, onSelectLocation) {
-  const el = document.getElementById("location-switcher");
-  const locs = getUnlockedLocations(state);
-  el.innerHTML = locs.map(loc => `
-    <button class="location-chip ${state.locationId === loc.id ? "selected" : ""}" data-loc="${loc.id}" title="${loc.lifeFlavor}">
-      ${loc.emoji} ${loc.name}
-    </button>
-  `).join("");
-  el.querySelectorAll(".location-chip").forEach(btn => {
-    btn.addEventListener("click", () => onSelectLocation(btn.dataset.loc));
-  });
-}
-
 // ---------- 行動分類 tabs + 行動清單 ----------
 let currentActionTab = null;
 
@@ -1050,7 +1111,7 @@ export function renderPeopleList(state) {
     return `
       <div class="person-card">
         <div class="person-card-header">
-          <span class="avatar-emoji">${c.avatarEmoji}</span>
+          ${characterAvatarHtml(c, state)}
           <div>
             <div class="person-name">${c.name}（${c.role}）</div>
             <span class="person-stage-badge stage-tone-${getStageCategoryMeta(summary.stageCategory).tone}">${getStageCategoryMeta(summary.stageCategory).icon} ${summary.stageLabel}</span>
@@ -1092,7 +1153,7 @@ export function renderJournal(state) {
 // ---------- 訊息浮動按鈕與列表 ----------
 export function renderMessageBadge(state) {
   const badge = document.getElementById("message-badge");
-  const count = state.unreadMessages.length;
+  const count = state.unreadMessages.length + getVisibleActiveMessageObjects(state).length;
   if (count > 0) {
     badge.textContent = String(count);
     badge.classList.remove("hidden");
@@ -1101,23 +1162,38 @@ export function renderMessageBadge(state) {
   }
 }
 
-export function renderMessageList(state, onOpenMessage, onSkipMessage) {
+export function renderMessageList(state, onOpenMessage, onSkipMessage, onOpenActiveMessage) {
   const el = document.getElementById("message-list-body");
   const msgs = getUnreadMessageObjects(state);
-  if (!msgs.length) {
+  const activeMessages = getVisibleActiveMessageObjects(state);
+  if (!msgs.length && !activeMessages.length) {
     el.innerHTML = `<p class="muted-text">暫時冇未讀訊息。</p>`;
     return;
   }
   el.innerHTML = "";
+  activeMessages.forEach(m => {
+    const sender = getCharacterById(m.senderId);
+    const row = document.createElement("div");
+    row.className = "message-row message-urgent";
+    row.innerHTML = `
+      ${characterAvatarHtml(sender, state)}
+      <div class="message-row-body">
+        <div class="message-row-title">主動訊息</div>
+        <div class="message-row-sub">${sender ? (getCharacterDisplayName(m.senderId, state) || sender.name) : "未知"} ・ 親近度 ${m.threshold}</div>
+      </div>
+    `;
+    row.querySelector(".message-row-body").addEventListener("click", () => onOpenActiveMessage && onOpenActiveMessage(m.instanceId));
+    el.appendChild(row);
+  });
   msgs.forEach(m => {
     const sender = getCharacterById(m.senderId);
     const row = document.createElement("div");
     row.className = "message-row" + (m.urgency === "urgent" ? " message-urgent" : "");
     row.innerHTML = `
-      <span class="avatar-emoji">${sender ? sender.avatarEmoji : "💬"}</span>
+      ${characterAvatarHtml(sender, state)}
       <div class="message-row-body">
         <div class="message-row-title">${m.title}</div>
-        <div class="message-row-sub">${sender ? (getCharacterDisplayName(m.senderId) || sender.name) : "未知"}${m.urgency === "urgent" ? " ・ 緊急" : ""}</div>
+        <div class="message-row-sub">${sender ? (getCharacterDisplayName(m.senderId, state) || sender.name) : "未知"}${m.urgency === "urgent" ? " ・ 緊急" : ""}</div>
       </div>
     `;
     row.querySelector(".message-row-body").addEventListener("click", () => onOpenMessage(m.id));
@@ -1136,18 +1212,34 @@ export function showMessageListOverlay() { document.getElementById("message-list
 export function hideMessageListOverlay() { document.getElementById("message-list-overlay").classList.add("hidden"); }
 
 // ---------- 對話／訊息內容框（共用） ----------
-export function showDialogue(dialogue, onChoiceSelected, state) {
+export function showDialogue(dialogue, onChoiceSelected, state, options = {}) {
   const overlay = document.getElementById("dialogue-overlay");
   const speakerId = dialogue.senderId || dialogue.speakerId;
-  const speaker = getCharacterById(speakerId);
-  document.getElementById("dialogue-avatar").textContent = speaker ? speaker.avatarEmoji : "💬";
-  document.getElementById("dialogue-name").textContent = speaker ? (getCharacterDisplayName(speakerId) || speaker.name) : "神秘人";
+  const speaker = getCharacterById(speakerId, state);
+  const avatarEl = document.getElementById("dialogue-avatar");
+  avatarEl.src = speaker ? resolveCharacterIcon(speaker, state) : DEFAULT_UNKNOWN_ICON;
+  avatarEl.alt = speaker ? escapeHtml(speaker.name || "") : "";
+  document.getElementById("dialogue-name").textContent = speaker ? (getCharacterDisplayName(speakerId, state) || speaker.name) : "神秘人";
 
   const lines = state ? getMessageVariantByRelationship(dialogue, state) : dialogue.lines;
-  document.getElementById("dialogue-lines").innerHTML = lines.map(l => `<p>${l}</p>`).join("");
+  document.getElementById("dialogue-lines").innerHTML = lines.map(line => {
+    const normalized = typeof line === "string" ? { type: "speech", text: line } : line;
+    const cls = normalized.type === "narrator" ? "dialogue-narrator-line" : "dialogue-speech-line";
+    return `<p class="${cls}">${escapeHtml(normalized.text || "")}</p>`;
+  }).join("");
 
   const choicesEl = document.getElementById("dialogue-choices");
   choicesEl.innerHTML = "";
+  const setDialogueChoicesDisabled = (disabled) => {
+    choicesEl.querySelectorAll("button").forEach(btn => { btn.disabled = disabled; });
+  };
+  const typingDotsHtml = `<span class="typing-dots" aria-hidden="true"><span></span><span></span><span></span></span>`;
+  const activeMessageWaitingText = (elapsedMs) => {
+    const name = speaker ? (getCharacterDisplayName(speakerId, state) || speaker.name) : "對方";
+    if (elapsedMs >= 10000) return `${name}仲喺度組織緊點答你`;
+    if (elapsedMs >= 3000) return `${name}仲諗緊點答你`;
+    return `${name}正在諗點答你`;
+  };
   const visibleChoices = state ? getAvailableChoicesByRelationship(dialogue, state) : dialogue.choices;
   visibleChoices.forEach((choice) => {
     const realIndex = dialogue.choices.indexOf(choice);
@@ -1162,6 +1254,75 @@ export function showDialogue(dialogue, onChoiceSelected, state) {
     btn.addEventListener("click", () => onChoiceSelected(realIndex));
     choicesEl.appendChild(btn);
   });
+
+  if (options.freeInputEnabled && options.onFreeInput) {
+    const freeWrap = document.createElement("div");
+    freeWrap.className = "dialogue-free-input";
+    freeWrap.innerHTML = `
+      <button class="btn-choice dialogue-free-toggle" type="button">自己輸入</button>
+      <div class="dialogue-free-panel hidden">
+        <textarea class="dialogue-free-textarea" maxlength="160" placeholder="輸入一句回覆"></textarea>
+        <div class="dialogue-free-actions">
+          <button class="btn-small btn-secondary dialogue-free-send" type="button">送出</button>
+          <button class="btn-small btn-secondary dialogue-free-cancel" type="button">取消</button>
+        </div>
+        <div class="dialogue-free-status muted-text hidden"></div>
+      </div>
+    `;
+    const toggle = freeWrap.querySelector(".dialogue-free-toggle");
+    const panel = freeWrap.querySelector(".dialogue-free-panel");
+    const textarea = freeWrap.querySelector(".dialogue-free-textarea");
+    const send = freeWrap.querySelector(".dialogue-free-send");
+    const cancel = freeWrap.querySelector(".dialogue-free-cancel");
+    const status = freeWrap.querySelector(".dialogue-free-status");
+    let waitingTimer = null;
+    const stopWaiting = () => {
+      if (waitingTimer) clearInterval(waitingTimer);
+      waitingTimer = null;
+    };
+    const startWaiting = () => {
+      const startedAt = Date.now();
+      const renderWaiting = () => {
+        status.innerHTML = `${escapeHtml(activeMessageWaitingText(Date.now() - startedAt))}${typingDotsHtml}`;
+      };
+      renderWaiting();
+      status.classList.remove("hidden");
+      waitingTimer = setInterval(renderWaiting, 500);
+    };
+    toggle.addEventListener("click", () => {
+      panel.classList.remove("hidden");
+      toggle.classList.add("hidden");
+      textarea.focus();
+    });
+    cancel.addEventListener("click", () => {
+      textarea.value = "";
+      panel.classList.add("hidden");
+      toggle.classList.remove("hidden");
+      stopWaiting();
+      status.classList.add("hidden");
+    });
+    send.addEventListener("click", async () => {
+      const value = textarea.value.trim();
+      if (!value) return;
+      setDialogueChoicesDisabled(true);
+      send.disabled = true;
+      textarea.disabled = true;
+      startWaiting();
+      try {
+        const handled = await options.onFreeInput(value);
+        if (!handled) {
+          status.textContent = "暫時未能理解這次回覆，請再試一次。";
+          status.classList.remove("hidden");
+        }
+      } finally {
+        stopWaiting();
+        setDialogueChoicesDisabled(false);
+        send.disabled = false;
+        textarea.disabled = false;
+      }
+    });
+    choicesEl.appendChild(freeWrap);
+  }
 
   overlay.classList.remove("hidden");
 }
@@ -1179,6 +1340,42 @@ function choicePreviewHtml(preview, state) {
 }
 
 export function hideDialogue() { document.getElementById("dialogue-overlay").classList.add("hidden"); }
+
+// ---------- Opening event 選完 choice 之後嘅結果流程 ----------
+// 順序一定要係：玩家 playerLine → follow-up resultDialogue → point change result，
+// 唔可以淨係顯示數值、唔可以將 follow-up dialogue 藏起
+export function showOpeningEventOutcome({ playerLine, playerLineType, resultDialogue, outcomeSummary }, onContinue) {
+  const storyHtml = [];
+  if (playerLine) {
+    storyHtml.push(`<div class="outcome-story-bubble outcome-story-player">${playerLineType === "action" ? escapeHtml(playerLine) : `「${escapeHtml(playerLine)}」`}</div>`);
+  }
+  if (resultDialogue && resultDialogue.text) {
+    const isNarrator = !resultDialogue.speaker || resultDialogue.speaker === "旁白";
+    storyHtml.push(`
+      <div class="outcome-story-bubble ${isNarrator ? "outcome-story-narrator" : "outcome-story-speaker"}">
+        ${!isNarrator ? `<div class="outcome-story-speaker-name">${escapeHtml(resultDialogue.speaker)}</div>` : ""}
+        <div>${escapeHtml(resultDialogue.text)}</div>
+      </div>
+    `);
+  }
+  const pointHtml = (outcomeSummary || []).map(l => `<div class="outcome-line">${l}</div>`).join("");
+
+  const hasAnything = storyHtml.length || pointHtml;
+  if (!hasAnything) { onContinue(); return; }
+
+  document.getElementById("outcome-summary-list").innerHTML = `
+    ${storyHtml.length ? `<div class="outcome-story-block">${storyHtml.join("")}</div>` : ""}
+    ${pointHtml}
+  `;
+  document.getElementById("outcome-summary-overlay").classList.remove("hidden");
+  const btn = document.getElementById("btn-outcome-summary-continue");
+  const newBtn = btn.cloneNode(true);
+  btn.parentNode.replaceChild(newBtn, btn);
+  newBtn.addEventListener("click", () => {
+    document.getElementById("outcome-summary-overlay").classList.add("hidden");
+    onContinue();
+  });
+}
 
 // ---------- 回覆後果摘要 ----------
 export function showOutcomeSummary(lines, onContinue) {
@@ -1361,7 +1558,6 @@ export function renderAll(state, handlers) {
   renderWeekHeader(state);
   renderUrgentBanner(state);
   renderForcedScheduleBanner(state, handlers.onNegotiateForcedSchedule);
-  renderLocationSwitcher(state, handlers.onSelectLocation);
   renderActionTabs(state, handlers.onRefreshActions);
   renderActionList(state, handlers.onChooseAction);
 

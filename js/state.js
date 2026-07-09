@@ -11,9 +11,15 @@ export function createInitialState() {
   return {
     dataVersion: DATA_VERSION,
     playerName: "",
+    // 玩家性別："male" | "female" | null（null＝舊存檔未補選，或者玩家未揀）。
+    // 現階段淨係 player profile field，唔用嚟大規模分歧 W1–W6 event／message 內容。
+    gender: null,
     age: 6,
     stageId: "stage_p1",
     locationId: "loc_shatin",
+    // 呢個 playthrough 專屬嘅隨機種子，淨係用嚟做 deterministic weekly seeded selection
+    // （例如 action card 嘅 related person 每週固定、下週先變），唔影響存檔相容性
+    saveSeed: Math.floor(Math.random() * 1000000000),
 
     // ---------- 學期／週曆 ----------
     currentTermId: "term_p1_s1",
@@ -82,10 +88,18 @@ export function createInitialState() {
     unreadMessages: [],        // messageId[]，等緊玩家開嘅訊息
     urgentMessageIds: [],      // messageId[]，未回覆前唔可以進入下一週
     deliveredMessageIds: [],   // 已經派送過（避免重複派送）嘅 messageId
+    activeMessageQueue: [],    // NPC 主動訊息 queue：author-only content instance，resolved 後保留記錄但不再顯示
+    activeMessageState: {},    // { charId: { triggeredThresholds, pendingMessageIds, lastActiveMessageWeek } }
+    activeMessageHistory: [],  // active message 第一回覆關係處理記錄
+    relationshipMilestoneRewards: {}, // { charId: { triggeredThresholds: [] } }，家庭／老師／補習老師一次性支援
     pendingConsequences: [],   // { id, consequenceId, triggerAtWeek, triggerAtTermId, resolved }
     reviewLogs: [],            // 成長記事簿記錄
+    freeInputReviewLogIds: [], // 自己輸入成功結算後寫入成長記事簿嘅去重 id
     memories: [],              // 簡短記憶字串，俾 hasMemory 條件用
     recentActionHistory: [],   // { actionId, category, week, termId }
+    // [{ type: "action_relationship_gain", week, actionId, characterId, displayedTargetName, amount, dimension }]
+    // 記錄 action card 顯示咗邊個角色、玩家揀咗之後實際加咗邊個嘅 relationship，方便 debug UI／實際加分一致
+    actionRelationshipHistory: [],
 
     // ---------- NPC 關係系統 ----------
     // { charId: { closeness, trust, respect, dependency, misunderstanding } }
@@ -100,6 +114,9 @@ export function createInitialState() {
     locationFamiliarity: {},
     // { category: count }，累積用過幾多次某分類嘅行動，俾 actionCategoryUsedAtLeast 條件用
     categoryUsageCounts: {},
+    // { actionFamily: count }，累積用過幾多次某成長線（例如 learning_habit、peer_relationship）嘅行動，
+    // 俾 actionFamilyUsedAtLeast 條件用，係 action tier progressive unlock 嘅核心追蹤數值
+    actionFamilyUseCount: {},
     // { charId: attitudeText }，特殊事件可以覆寫 NPC 對玩家嘅態度描述
     characterAttitudeOverrides: {},
     // [{ locationId, eventId }]，已經解鎖嘅地區專屬事件
@@ -196,8 +213,40 @@ export function createInitialState() {
     // 結構化事件紀錄：每次事件／訊息選擇解決之後都寫一條，俾 generateSixWeekStoryScene() 揀故事線用
     storyEventLog: [],         // [{ eventId, eventTitle, week, location, charactersInvolved, playerChoiceText,
                                //    playerAttitudeTag, resultSummary, relationshipChanges, identityChanges,
-                               //    scheduleChanges, goalChanges, routeSeedChanges, followUpEventIds, storyThreadId }]
-    sixWeekStoryHistory: []    // 每 6 週生成一次嘅「人生片段回顧」歷史記錄
+                               //    scheduleChanges, goalChanges, routeSeedChanges, followUpEventIds, storyThreadId,
+                               //    variantId, choiceId, storyMemoryTags }]    // 後三個欄位係 opening event 專用
+    sixWeekStoryHistory: [],   // 每 6 週生成一次嘅「人生片段回顧」歷史記錄
+
+    // ---------- W1–W6 opening event pool（data/openingEvents.js + data/openingEventRegistry.js） ----------
+    usedOpeningEventIds: [],       // eventId[]，onceOnly 嘅事件觸發過一次之後就唔會再揀
+    openingEventCooldowns: {},     // { eventId: totalWeeksElapsed }，配合 cooldownWeeks 判斷幾時先可以再揀
+    openingExclusiveGroupUsedThisWeek: {}, // { exclusiveGroup: true }，本週已經用過邊個 exclusiveGroup
+    pendingOpeningEvent: null,     // 本週抽中、等緊玩家揀嘅 opening event：{ eventId, variantId }
+
+    // ---------- Skill property 系統 ----------
+    // { skillName: number }，具體能力經驗值，同「學業、社交、創意、自信」等核心 property 分開。
+    // 現階段唯一合法入口係 hobby class 週處理（js/engine.js applyHobbyWeeklyEffects 讀 hobby.skillExpDelta）。
+    // 初始一律 0；UI 只顯示 skillExp > 0 嘅項目（見 js/ui.js renderSkillList）。
+    skillExp: {
+      繪畫: 0,
+      鋼琴: 0,
+      朗誦: 0,
+      游泳: 0,
+      足球: 0,
+      編程: 0,
+      閱讀: 0,
+      班務服務: 0
+    },
+
+    // ---------- Chatbot bonus function（唔係 action／event／hobby class，唔消耗 AP） ----------
+    // 淨係俾玩家同已解鎖角色傾偈，最多對嗰個角色加少少 relationship，唔可以改 core property／skillExp。
+    // 注意：provider 揀擇同 BYOK API key 一律唔存喺呢度（唔入 save data），存喺瀏覽器
+    // sessionStorage／localStorage，見 js/chatbot.js getSelectedProvider／getApiKey。
+    chatbot: {
+      // { [characterId]: { chatHistory: [{role, text, week}], smallChatMemorySummary, lastChattedWeek,
+      //                     chatbotRelationshipGainThisWeek } }
+      threads: {}
+    }
   };
 }
 

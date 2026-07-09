@@ -7,14 +7,15 @@ import {
   executeAction, chooseDialogueOption, triggerDialogue,
   chooseMessageOption, advanceWeek, selectTermGoal,
   setBackgroundTagsCache, captureTermStartSnapshot,
-  incrementLocationFamiliarity, applyLocationRelationshipInfluence,
   checkLifeDirection, allowSkipMessageWithConsequence, resolvePopupChoice,
   generateStartingCaps, generateStartingPotentialReport, applyResourceChangeWithCap,
   joinHobby, quitHobby, joinOpportunity, declineOpportunity, negotiateForcedSchedule,
   getGoalsByCategory, getUrgentGoals, abandonGoal,
   checkOpportunityEntryRequirements, getOpportunityMissingRequirements, getOverqualifiedOpportunityReminders,
   cancelScheduleItem, negotiateScheduleItem,
-  drawOpeningEventForWeek, resolveOpeningEventChoice
+  drawOpeningEventForWeek, resolveOpeningEventChoice,
+  getVisibleActiveMessageObjects, resolveActiveMessageChoice, resolveActiveMessageFreeReply,
+  getPendingOpeningEventContext, resolveOpeningEventFreeReply
 } from "./engine.js";
 import * as UI from "./ui.js";
 import { getAllBackgroundCategories, pickRandom } from "../data/backgrounds.js";
@@ -22,30 +23,107 @@ import { termGoals } from "../data/goals.js";
 import { getMessageById } from "../data/messages.js";
 import { hobbies } from "../data/hobbies.js";
 import { getCompetitionById } from "../data/opportunities.js";
-import { generateCharacters } from "../data/characters.js";
+import { generateCharacters, getCharacterById, getCharacterDisplayName, normalizeFixedNamedCharacters } from "../data/characters.js";
 import {
   sendChatbotMessage, testApiKeyConnection,
   getSelectedProvider, setSelectedProvider, getApiKey, setApiKey, clearApiKey,
-  getSelectedModel, setSelectedModel, fetchAvailableModels
+  getSelectedModel, setSelectedModel, fetchAvailableModels,
+  evaluateActiveMessageReplyWithApi, evaluateOpeningEventReplyWithApi
 } from "./chatbot.js";
 import { validateContentData, validateSingleEntry, CONTENT_TYPES } from "../data/contentValidation.js";
 import { BLANK_TEMPLATES } from "../data/contentSchemaExamples.js";
 
 const RANDOM_NAMES = ["阿晴", "阿朗", "家豪", "曉澄", "子軒", "詠詩", "俊熙", "苡蓁"];
+const RETIRED_TERM_GOAL_IDS = ["goal_happy_everyday", "goal_explore_more"];
+const RETIRED_CHARACTER_IDS = ["char_librarian", "char_dismissal_staff"];
+const RETIRED_PERSONALITY_MIGRATIONS = {
+  pers_loyal_sidekick: {
+    personalityId: "pers_outgoing_inviter",
+    personalityKey: "outgoing_inviter",
+    reactionProfileId: "reaction_peer_fun",
+    personalityTags: ["外向邀請型"],
+    defaultTone: "外向邀請型"
+  },
+  pers_loyal_friend: {
+    personalityId: "pers_outgoing_inviter",
+    personalityKey: "outgoing_inviter",
+    reactionProfileId: "reaction_peer_fun",
+    personalityTags: ["外向邀請型"],
+    defaultTone: "外向邀請型"
+  }
+};
 
 let selection = {
   playerName: "",
+  gender: "male",
   familyMode: "random",
   family: null,
   regionMode: "random",
   region: null
 };
 
-const locationByRegion = {
-  region_nt: "loc_tuenmun",
-  region_hkisland: "loc_causeway",
-  region_kowloon: "loc_mongkok"
-};
+function normalizeLoadedTermGoal(s) {
+  const selectedGoalId = s.selectedTermGoalId;
+  const needsReselect = !!selectedGoalId && !termGoals.some(goal => goal.id === selectedGoalId);
+  const retiredIds = new Set(RETIRED_TERM_GOAL_IDS);
+  if (needsReselect) {
+    s.selectedTermGoalId = null;
+    retiredIds.add(selectedGoalId);
+  }
+  retiredIds.forEach(goalId => {
+    if (s.goalProgress) delete s.goalProgress[goalId];
+    if (s.goalProgressMap) delete s.goalProgressMap[goalId];
+    if (s.termGoalProgressDetail) delete s.termGoalProgressDetail[goalId];
+  });
+  s.completedGoals = (s.completedGoals || []).filter(id => !retiredIds.has(id));
+  s.missedGoals = (s.missedGoals || []).filter(id => !retiredIds.has(id));
+  return needsReselect;
+}
+
+function removeRetiredCharactersFromLoadedState(s) {
+  const retiredIds = new Set(RETIRED_CHARACTER_IDS);
+  retiredIds.forEach(characterId => {
+    if (s.generatedCharacters) delete s.generatedCharacters[characterId];
+    if (s.relationships) delete s.relationships[characterId];
+    if (s.characterMemories) delete s.characterMemories[characterId];
+    if (s.lastInteractionWeek) delete s.lastInteractionWeek[characterId];
+    if (s.choiceCooldowns) delete s.choiceCooldowns[characterId];
+    if (s.npcGoalProgress) delete s.npcGoalProgress[characterId];
+    if (s.characterAttitudeOverrides) delete s.characterAttitudeOverrides[characterId];
+  });
+  s.knownCharacters = (s.knownCharacters || []).filter(id => !retiredIds.has(id));
+  s.actionRelationshipHistory = (s.actionRelationshipHistory || []).filter(entry => !retiredIds.has(entry.characterId));
+  s.scheduledCommitments = (s.scheduledCommitments || []).filter(item => !retiredIds.has(item.sourceCharacterId))
+    .map(item => ({
+      ...item,
+      relatedCharacterIds: (item.relatedCharacterIds || []).filter(id => !retiredIds.has(id))
+    }));
+  s.identities = (s.identities || []).filter(item => !retiredIds.has(item.givenByCharacterId))
+    .map(item => ({
+      ...item,
+      relatedRelationships: (item.relatedRelationships || []).filter(rel => !retiredIds.has(rel.characterId))
+    }));
+  s.storyEventLog = (s.storyEventLog || []).map(entry => ({
+    ...entry,
+    charactersInvolved: (entry.charactersInvolved || []).filter(id => !retiredIds.has(id))
+  }));
+}
+
+function applyLoadedState(loaded) {
+  Object.assign(state, loaded);
+  // 舊存檔冇 gender 呢個 field：唔會 crash，淨係補一個 null，玩家可以之後喺「設定」頁自己補選
+  if (state.gender !== "male" && state.gender !== "female") state.gender = null;
+  const needsGoalReselect = normalizeLoadedTermGoal(state);
+  removeRetiredCharactersFromLoadedState(state);
+  Object.values(state.generatedCharacters || {}).forEach(character => {
+    const migration = RETIRED_PERSONALITY_MIGRATIONS[character.personalityId];
+    if (migration && character.generatedFromIdentityType === "same_age_peer") {
+      Object.assign(character, migration);
+    }
+  });
+  normalizeFixedNamedCharacters(state);
+  return needsGoalReselect;
+}
 
 // ---------- 開局設定 ----------
 function refreshSetupScreen() {
@@ -56,7 +134,7 @@ function refreshSetupScreen() {
 }
 
 function randomizeSelectionAndBegin() {
-  selection = { playerName: selection.playerName, familyMode: "random", family: null, regionMode: "random", region: null };
+  selection = { playerName: selection.playerName, gender: selection.gender, familyMode: "random", family: null, regionMode: "random", region: null };
   applyBackgroundToState();
   UI.showScreen("screen-report");
   UI.renderStartingReport(state);
@@ -78,6 +156,7 @@ function applyBackgroundToState() {
 
   resetState();
   state.playerName = selection.playerName?.trim() || pickRandom(RANDOM_NAMES);
+  state.gender = selection.gender === "female" ? "female" : "male";
   state.background = {
     familyId: familyOpt.id,
     regionId: regionOpt.id,
@@ -88,6 +167,7 @@ function applyBackgroundToState() {
 
   // 生成呢一世嘅具體角色（媽媽、爸爸、班主任、同學……嘅名同人格），每次新人生都唔一樣
   generateCharacters(state);
+  normalizeFixedNamedCharacters(state);
 
   // 核心資源上限系統：先隨機決定總資源池同分配，再用家庭／地區背景做輕微調整（唔會完全決定命運）
   generateStartingCaps(state);
@@ -103,8 +183,9 @@ function applyBackgroundToState() {
   const tags = chosen.flatMap(opt => opt.tags || []);
   setBackgroundTagsCache(state, tags);
 
-  state.locationId = locationByRegion[regionOpt.id] || "loc_shatin";
-  state.unlockedLocations = Array.from(new Set([state.locationId, "loc_shatin"]));
+  // 地區系統已經拆走：玩家永遠固定喺沙田，唔會再有得揀／切換地區
+  state.locationId = "loc_shatin";
+  state.unlockedLocations = ["loc_shatin"];
 
   captureTermStartSnapshot(state);
   state.logs.push(`你嘅人生喺${state.age}歲開始……`);
@@ -114,13 +195,13 @@ function applyBackgroundToState() {
 function renderGame() {
   UI.renderAll(state, {
     onChooseAction: handleChooseAction,
-    onSelectLocation: handleSelectLocation,
     onRefreshActions: refreshActionListOnly,
     urgentGoals: getUrgentGoals(state),
     onNegotiateForcedSchedule: handleNegotiateForcedSchedule
   });
   const detailedToggle = document.getElementById("toggle-detailed-numbers");
   if (detailedToggle) detailedToggle.checked = !!state.showDetailedNumbers;
+  if (document.getElementById("settings-gender-row")) renderSettingsGenderRow();
 }
 
 function handleNegotiateForcedSchedule(forcedId) {
@@ -135,14 +216,6 @@ function handleNegotiateForcedSchedule(forcedId) {
 
 function refreshActionListOnly() {
   UI.renderActionList(state, handleChooseAction);
-}
-
-function handleSelectLocation(locId) {
-  state.locationId = locId;
-  incrementLocationFamiliarity(locId, state);
-  applyLocationRelationshipInfluence(locId, state);
-  checkLifeDirection(state);
-  renderGame();
 }
 
 function handleChooseAction(actionId, targetCharacterId = null) {
@@ -198,6 +271,56 @@ function openMessageFromList(messageId) {
   openMessage(messageId);
 }
 
+function openActiveMessageFromList(instanceId) {
+  UI.hideMessageListOverlay();
+  openActiveMessage(instanceId);
+}
+
+function openActiveMessage(instanceId) {
+  const activeMessage = getVisibleActiveMessageObjects(state).find(m => m.instanceId === instanceId);
+  if (!activeMessage) return;
+  const showActiveMessageOutcome = (result) => {
+    const sender = getCharacterById(activeMessage.characterId, state);
+    const senderName = sender ? (getCharacterDisplayName(activeMessage.characterId, state) || sender.name) : "對方";
+    UI.hideDialogue();
+    UI.showOpeningEventOutcome({
+      playerLine: result.playerLine,
+      resultDialogue: { speaker: senderName, text: result.npcFollowUp },
+      outcomeSummary: [result.resultText, result.relationshipResultText].filter(Boolean)
+    }, () => {
+      renderGame();
+      refreshMessageList();
+      autosave();
+    });
+  };
+  UI.showDialogue(activeMessage, (choiceIndex) => {
+    const choice = activeMessage.choices[choiceIndex];
+    const result = resolveActiveMessageChoice(instanceId, choice?.id, state);
+    if (!result.ok) {
+      alert(result.message || "暫時未能處理這次回覆。");
+      return;
+    }
+    showActiveMessageOutcome(result);
+  }, state, {
+    freeInputEnabled: !!getApiKey(getSelectedProvider()) && !!getSelectedModel(getSelectedProvider()),
+    onFreeInput: async (playerFreeReply) => {
+      const sender = getCharacterById(activeMessage.characterId, state);
+      const evaluated = await evaluateActiveMessageReplyWithApi(sender, activeMessage, playerFreeReply, state);
+      if (!evaluated.ok) {
+        alert(evaluated.error || "暫時未能理解這次回覆，請再試一次。");
+        return false;
+      }
+      const result = resolveActiveMessageFreeReply(instanceId, playerFreeReply, evaluated.evaluation, state);
+      if (!result.ok) {
+        alert(result.message || "暫時未能處理這次回覆。");
+        return false;
+      }
+      showActiveMessageOutcome(result);
+      return true;
+    }
+  });
+}
+
 function openMessage(messageId) {
   const message = getMessageById(messageId);
   if (!message) return;
@@ -225,7 +348,7 @@ function handleSkipMessage(messageId) {
 }
 
 function refreshMessageList() {
-  UI.renderMessageList(state, openMessageFromList, handleSkipMessage);
+  UI.renderMessageList(state, openMessageFromList, handleSkipMessage, openActiveMessageFromList);
 }
 
 // ---------- 週推進 ----------
@@ -280,11 +403,39 @@ function handleAdvanceWeek() {
 
   const openingPopup = drawOpeningEventForWeek(state, weekJustCompleted);
   if (openingPopup) {
-    UI.showDialogue(openingPopup, (choiceIndex) => {
-      const openingResult = resolveOpeningEventChoice(choiceIndex, state);
+    const showOpeningResult = (openingResult, playerLine, playerLineType = "speech") => {
       UI.hideDialogue();
       autosave();
-      UI.showOutcomeSummary(openingResult.outcomeSummary, continueAfterWeekEvents);
+      UI.showOpeningEventOutcome({
+        playerLine,
+        playerLineType,
+        resultDialogue: openingResult.resultDialogue,
+        outcomeSummary: openingResult.outcomeSummary
+      }, continueAfterWeekEvents);
+    };
+    UI.showDialogue(openingPopup, (choiceIndex) => {
+      const chosenChoice = openingPopup.choices[choiceIndex];
+      const openingResult = resolveOpeningEventChoice(choiceIndex, state);
+      // 順序一定要係：玩家 playerLine → follow-up resultDialogue → point change result，
+      // 兩樣都要顯示，唔可以淨係得數值
+      showOpeningResult(openingResult, chosenChoice?.playerLine || null, chosenChoice?.playerLineType || "speech");
+    }, state, {
+      freeInputEnabled: !!getApiKey(getSelectedProvider()) && !!getSelectedModel(getSelectedProvider()),
+      onFreeInput: async (playerFreeReply) => {
+        const context = getPendingOpeningEventContext(state);
+        const evaluated = await evaluateOpeningEventReplyWithApi(context, playerFreeReply, state);
+        if (!evaluated.ok) {
+          alert(evaluated.error || "暫時未能理解這次回覆，請再試一次。");
+          return false;
+        }
+        const openingResult = resolveOpeningEventFreeReply(playerFreeReply, evaluated.evaluation, state);
+        if (!openingResult.ok) {
+          alert(openingResult.message || "暫時未能處理這次回覆。");
+          return false;
+        }
+        showOpeningResult(openingResult, openingResult.playerLine, "speech");
+        return true;
+      }
     });
   } else {
     continueAfterWeekEvents();
@@ -307,7 +458,7 @@ function autosave() {
 // ---------- 事件綁定 ----------
 function bindStartScreen() {
   document.getElementById("btn-new-game").addEventListener("click", () => {
-    selection = { playerName: "", familyMode: "random", family: null, regionMode: "random", region: null };
+    selection = { playerName: "", gender: "male", familyMode: "random", family: null, regionMode: "random", region: null };
     refreshSetupScreen();
     UI.showScreen("screen-setup");
   });
@@ -322,9 +473,13 @@ function bindStartScreen() {
     btn.addEventListener("click", () => {
       const loaded = loadGame();
       if (loaded) {
-        Object.assign(state, loaded);
+        const needsGoalReselect = applyLoadedState(loaded);
         UI.showScreen("screen-game");
         renderGame();
+        if (needsGoalReselect) {
+          autosave();
+          openGoalSelect();
+        }
       } else {
         alert("資料版本已更新，舊存檔包含已移除的事件內容，請開始新人生。");
       }
@@ -706,6 +861,9 @@ async function beginChatbotSend(message, forcedCharacterId = null) {
     }
     return;
   }
+  // 傾偈可能改咗屬性／skillExp／relationship，要成個 renderGame() 先會刷新到人物頁／屬性格，
+  // 淨係 renderChatbotThread 得返聊天氣泡本身，人物頁會顯示緊上一次 render 嗰陣嘅舊數值。
+  renderGame();
   UI.renderChatbotThread(activeCharacterAtSend, state);
   autosave();
 }
@@ -720,6 +878,13 @@ function bindGoalSelectScreen() {
   });
 }
 
+// 舊存檔冇 gender（null）先會喺呢度顯示俾玩家補選；已經揀咗嘅玩家都可以喺度改
+function renderSettingsGenderRow() {
+  document.querySelectorAll("#settings-gender-row .option-chip").forEach(chip => {
+    chip.classList.toggle("selected", chip.dataset.gender === state.gender);
+  });
+}
+
 function bindSettingsScreen() {
   const detailedToggle = document.getElementById("toggle-detailed-numbers");
   detailedToggle.checked = !!state.showDetailedNumbers;
@@ -727,6 +892,15 @@ function bindSettingsScreen() {
     state.showDetailedNumbers = e.target.checked;
     autosave();
   });
+  document.querySelectorAll("#settings-gender-row .option-chip").forEach(chip => {
+    chip.addEventListener("click", () => {
+      state.gender = chip.dataset.gender;
+      renderSettingsGenderRow();
+      renderGame();
+      autosave();
+    });
+  });
+  renderSettingsGenderRow();
   document.getElementById("btn-reselect-goal").addEventListener("click", () => openGoalSelect());
   document.getElementById("btn-save").addEventListener("click", () => {
     saveGame(state);
@@ -735,9 +909,15 @@ function bindSettingsScreen() {
   document.getElementById("btn-load").addEventListener("click", () => {
     const loaded = loadGame();
     if (loaded) {
-      Object.assign(state, loaded);
+      const needsGoalReselect = applyLoadedState(loaded);
       renderGame();
-      alert("已經讀取返你嘅人生！");
+      if (needsGoalReselect) {
+        autosave();
+        openGoalSelect();
+        alert("舊存檔入面嘅本學期心願已移除，請重新揀一個心願。");
+      } else {
+        alert("已經讀取返你嘅人生！");
+      }
     } else {
       alert("搵唔到存檔喎。");
     }

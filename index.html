@@ -77,7 +77,6 @@
           <button id="btn-open-hobbies" class="btn btn-secondary btn-small">🎨 興趣班</button>
           <button id="btn-open-guide" class="btn btn-secondary btn-small">📖 行動指南</button>
         </div>
-        <div id="location-switcher" class="location-switcher"></div>
         <div id="action-tabs-row" class="action-tabs-row"></div>
         <div id="action-list" class="action-list"></div>
         <button id="btn-advance-week" class="btn btn-primary btn-full advance-week-btn">▶️ 進入下一週</button>
@@ -100,6 +99,13 @@
             <span>顯示詳細數值（+6 / -3 呢類完整數字）</span>
             <input type="checkbox" id="toggle-detailed-numbers" />
           </label>
+          <div class="settings-toggle-row settings-gender-row">
+            <span>性別</span>
+            <div class="option-row" id="settings-gender-row">
+              <div class="option-chip" data-gender="male">男生</div>
+              <div class="option-chip" data-gender="female">女生</div>
+            </div>
+          </div>
           <button id="btn-reselect-goal" class="btn btn-secondary btn-full">🎯 重新揀本學期心願</button>
           <button id="btn-save" class="btn btn-secondary btn-full">💾 儲存遊戲</button>
           <button id="btn-load" class="btn btn-secondary btn-full">📂 讀取存檔</button>
@@ -207,7 +213,7 @@
     <div id="dialogue-overlay" class="dialogue-overlay hidden">
       <div class="dialogue-box">
         <div class="dialogue-speaker">
-          <span id="dialogue-avatar" class="avatar-emoji"></span>
+          <img id="dialogue-avatar" class="character-avatar" alt="" />
           <span id="dialogue-name" class="speaker-name"></span>
         </div>
         <div id="dialogue-lines" class="dialogue-lines"></div>

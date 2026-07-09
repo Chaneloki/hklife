@@ -93,9 +93,6 @@ export const actionCategorySeedMap = {
   支線: ["explorationSeed"]
 };
 
-// 特定角色相關嘅行動額外累積嘅種子（比分類更精準，例如深水埗街坊路線）
-export const characterRouteSeedMap = {
-  char_mystery_neighbor: ["streetSeed"],
-  char_cha_chaan_teng: ["streetSeed"]
-};
+// 特定角色相關嘅行動額外累積嘅種子（比分類更精準）
+export const characterRouteSeedMap = {};
 
