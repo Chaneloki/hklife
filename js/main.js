@@ -13,7 +13,8 @@ import {
   joinHobby, quitHobby, joinOpportunity, declineOpportunity, negotiateForcedSchedule,
   getGoalsByCategory, getUrgentGoals, abandonGoal,
   checkOpportunityEntryRequirements, getOpportunityMissingRequirements, getOverqualifiedOpportunityReminders,
-  cancelScheduleItem, negotiateScheduleItem
+  cancelScheduleItem, negotiateScheduleItem,
+  drawOpeningEventForWeek, resolveOpeningEventChoice
 } from "./engine.js";
 import * as UI from "./ui.js";
 import { getAllBackgroundCategories, pickRandom } from "../data/backgrounds.js";
@@ -22,6 +23,11 @@ import { getMessageById } from "../data/messages.js";
 import { hobbies } from "../data/hobbies.js";
 import { getCompetitionById } from "../data/opportunities.js";
 import { generateCharacters } from "../data/characters.js";
+import {
+  sendChatbotMessage, testApiKeyConnection,
+  getSelectedProvider, setSelectedProvider, getApiKey, setApiKey, clearApiKey,
+  getSelectedModel, setSelectedModel, fetchAvailableModels
+} from "./chatbot.js";
 import { validateContentData, validateSingleEntry, CONTENT_TYPES } from "../data/contentValidation.js";
 import { BLANK_TEMPLATES } from "../data/contentSchemaExamples.js";
 
@@ -139,8 +145,8 @@ function handleSelectLocation(locId) {
   renderGame();
 }
 
-function handleChooseAction(actionId) {
-  const result = executeAction(actionId, state);
+function handleChooseAction(actionId, targetCharacterId = null) {
+  const result = executeAction(actionId, state, targetCharacterId);
   if (!result.ok) {
     alert(result.reason === "AP 不足" ? "你今個星期嘅 AP 已經唔夠喇，等下星期再嚟啦！" : result.reason);
     return;
@@ -226,6 +232,9 @@ function refreshMessageList() {
 function handleAdvanceWeek() {
   const priorReportCardCount = state.reportCards.length;
   const priorStoryCount = state.sixWeekStoryHistory.length;
+  // 玩家撳「下一週」代表「完成緊呢一週」，opening event 應該係呢一週自己嘅 event，
+  // 所以要喺 advanceWeek() 將 currentWeek +1 之前，就攞低「玩家岩岩完成緊邊一週」
+  const weekJustCompleted = state.currentWeek;
   const result = advanceWeek(state);
   if (result.blocked) {
     alert(result.reason);
@@ -252,19 +261,33 @@ function handleAdvanceWeek() {
     }
   };
 
-  if (result.termEnded) {
-    showNewReportCardIfAny(() => {
-      UI.showTermReview(result.termReview, () => {
-        renderGame();
-        if (!result.finished) {
-          openGoalSelect();
-        } else {
-          alert("你已經完成咗目前設計嘅所有學期，敬請期待未來更新！");
-        }
+  const continueAfterWeekEvents = () => {
+    if (result.termEnded) {
+      showNewReportCardIfAny(() => {
+        UI.showTermReview(result.termReview, () => {
+          renderGame();
+          if (!result.finished) {
+            openGoalSelect();
+          } else {
+            alert("你已經完成咗目前設計嘅所有學期，敬請期待未來更新！");
+          }
+        });
       });
+    } else {
+      showNewReportCardIfAny(() => renderGame());
+    }
+  };
+
+  const openingPopup = drawOpeningEventForWeek(state, weekJustCompleted);
+  if (openingPopup) {
+    UI.showDialogue(openingPopup, (choiceIndex) => {
+      const openingResult = resolveOpeningEventChoice(choiceIndex, state);
+      UI.hideDialogue();
+      autosave();
+      UI.showOutcomeSummary(openingResult.outcomeSummary, continueAfterWeekEvents);
     });
   } else {
-    showNewReportCardIfAny(() => renderGame());
+    continueAfterWeekEvents();
   }
 }
 
@@ -347,12 +370,30 @@ function bindBottomNav() {
   });
 }
 
+// 浮動按鈕入口共用一個 overlay，用 tab 分開「訊息」（authored story message）同
+// 「傾偈」（Chatbot bonus function）。撳浮動按鈕預設開返「訊息」tab；傾偈淨係喺呢個 overlay 入面先開到。
 function bindMessageButton() {
   document.getElementById("btn-messages").addEventListener("click", () => {
     refreshMessageList();
+    switchMessageChatbotTab("messages");
     UI.showMessageListOverlay();
   });
   document.getElementById("btn-close-message-list").addEventListener("click", () => UI.hideMessageListOverlay());
+  document.getElementById("tab-btn-messages").addEventListener("click", () => switchMessageChatbotTab("messages"));
+  document.getElementById("tab-btn-chatbot").addEventListener("click", () => switchMessageChatbotTab("chatbot"));
+}
+
+function switchMessageChatbotTab(tab) {
+  document.getElementById("tab-btn-messages").classList.toggle("selected", tab === "messages");
+  document.getElementById("tab-btn-chatbot").classList.toggle("selected", tab === "chatbot");
+  document.getElementById("message-tab-body").classList.toggle("hidden", tab !== "messages");
+  document.getElementById("chatbot-tab-body").classList.toggle("hidden", tab !== "chatbot");
+  document.getElementById("message-chatbot-title").textContent = tab === "messages" ? "訊息" : "💬 傾偈";
+  if (tab === "chatbot") {
+    chatbotActiveCharacterId = null;
+    UI.switchChatbotView("list");
+    refreshChatbotModal();
+  }
 }
 
 function bindGuideModal() {
@@ -445,6 +486,228 @@ function refreshHobbiesModal() {
       autosave();
     }
   }, qualification, overqualifiedReminders);
+}
+
+// Chatbot bonus function：唔消耗 AP，唔係 action／event／hobby class，只可以對已解鎖角色加少少 relationship
+let chatbotActiveCharacterId = null;
+let pendingChatbotRequest = null;
+
+// 開／關成個 overlay 已經由 bindMessageButton／switchMessageChatbotTab 處理（共用同一個浮動按鈕），
+// 呢度淨係負責傾偈本身嘅內部控制（BYOK key 設定／返回名單／送出／Enter 送出）
+function bindChatbotModal() {
+  document.getElementById("btn-chatbot-back").addEventListener("click", () => {
+    cancelPendingChatbotRequest();
+    chatbotActiveCharacterId = null;
+    UI.switchChatbotView("list");
+  });
+  document.getElementById("btn-chatbot-send").addEventListener("click", handleChatbotSend);
+  document.getElementById("btn-chatbot-cancel").addEventListener("click", cancelPendingChatbotRequest);
+  document.getElementById("chatbot-input").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") handleChatbotSend();
+  });
+
+  document.getElementById("btn-chatbot-save-key").addEventListener("click", () => {
+    const keyInput = document.getElementById("chatbot-key-input");
+    const remember = document.getElementById("chatbot-key-remember").checked;
+    setApiKey(getSelectedProvider(), keyInput.value, remember);
+    persistCurrentModelSelection();
+    UI.renderChatbotKeyStatus();
+  });
+  document.getElementById("btn-chatbot-clear-key").addEventListener("click", () => {
+    clearApiKey(getSelectedProvider());
+    document.getElementById("chatbot-key-remember").checked = false;
+    UI.renderChatbotKeyStatus();
+  });
+  document.getElementById("btn-chatbot-test-key").addEventListener("click", async () => {
+    const provider = getSelectedProvider();
+    const keyInput = document.getElementById("chatbot-key-input");
+    // 玩家可能啱啱打咗 key 但未撳「儲存」，測試連線一律用返輸入框現時嘅值，冇就 fallback 用返已存嘅
+    const apiKeyToTest = keyInput.value.trim() || getApiKey(provider);
+    const model = getEffectiveModelFromInputs();
+    const testBtn = document.getElementById("btn-chatbot-test-key");
+    testBtn.disabled = true;
+    const result = await testApiKeyConnection(provider, apiKeyToTest, model);
+    testBtn.disabled = false;
+    UI.showChatbotKeyTestResult(result.ok, result.ok ? "連線成功！" : result.error);
+  });
+
+  // Model 揀擇：dropdown 揀咗就即刻存，手動輸入有嘢就用手動嘅（優先於 dropdown）
+  document.getElementById("chatbot-model-select").addEventListener("change", () => {
+    document.getElementById("chatbot-model-manual-input").value = "";
+    persistCurrentModelSelection();
+  });
+  document.getElementById("chatbot-model-manual-input").addEventListener("change", () => {
+    persistCurrentModelSelection();
+  });
+  document.getElementById("btn-chatbot-fetch-models").addEventListener("click", async () => {
+    const provider = getSelectedProvider();
+    const keyInput = document.getElementById("chatbot-key-input");
+    const apiKeyToUse = keyInput.value.trim() || getApiKey(provider);
+    const fetchBtn = document.getElementById("btn-chatbot-fetch-models");
+    fetchBtn.disabled = true;
+    const result = await fetchAvailableModels(provider, apiKeyToUse);
+    fetchBtn.disabled = false;
+    if (!result.ok || !result.models.length) {
+      UI.showChatbotKeyTestResult(false, "取得可用模型失敗，你可以繼續用 preset 或者手動輸入 model id。");
+      return;
+    }
+    await UI.renderChatbotModelRow(result.models);
+  });
+}
+
+// dropdown 冇手動輸入就用 dropdown 個值，手動輸入有嘢就用手動嗰個（優先）
+function getEffectiveModelFromInputs() {
+  const manual = document.getElementById("chatbot-model-manual-input").value.trim();
+  if (manual) return manual;
+  return document.getElementById("chatbot-model-select").value || "";
+}
+
+function persistCurrentModelSelection() {
+  const model = getEffectiveModelFromInputs();
+  if (model) setSelectedModel(getSelectedProvider(), model);
+}
+
+async function refreshChatbotModal() {
+  UI.renderChatbotProviderRow((providerId) => {
+    setSelectedProvider(providerId);
+    refreshChatbotModal();
+  });
+  UI.renderChatbotKeyStatus();
+  await UI.renderChatbotModelRow();
+  UI.renderChatbotCharacterList(state, (characterId) => {
+    cancelPendingChatbotRequest();
+    chatbotActiveCharacterId = characterId;
+    UI.switchChatbotView("thread");
+    UI.renderChatbotThread(characterId, state);
+  });
+}
+
+async function handleChatbotSend() {
+  const input = document.getElementById("chatbot-input");
+  const message = input.value;
+  if (!message.trim() || !chatbotActiveCharacterId) return;
+  beginChatbotSend(message);
+}
+
+function setChatbotSendingUi(isSending) {
+  const input = document.getElementById("chatbot-input");
+  const sendBtn = document.getElementById("btn-chatbot-send");
+  const cancelBtn = document.getElementById("btn-chatbot-cancel");
+  input.disabled = isSending;
+  sendBtn.disabled = isSending;
+  sendBtn.textContent = isSending ? "送出中" : "送出";
+  cancelBtn.classList.toggle("hidden", !isSending);
+}
+
+function clearPendingChatbotTimers(request) {
+  if (!request) return;
+  if (request.intervalId) clearInterval(request.intervalId);
+  if (request.timeoutId) clearTimeout(request.timeoutId);
+  request.intervalId = null;
+  request.timeoutId = null;
+}
+
+function getWaitingText(baseText, elapsedMs) {
+  const name = baseText.split(" ")[0] || "對方";
+  if (elapsedMs >= 10000) return "連接 AI 服務可能有少少慢，請再等等";
+  if (elapsedMs >= 3000) return `${name} 仲諗緊點答你`;
+  return baseText.replace(/[.…。]+$/g, "");
+}
+
+function renderPendingChatbotRequest(request) {
+  if (!request || pendingChatbotRequest?.id !== request.id) return;
+  const elapsedMs = Date.now() - request.startedAt;
+  UI.renderChatbotThread(request.characterId, state, {
+    pendingMessageId: request.id,
+    pendingPlayerMessage: request.message,
+    isTyping: true,
+    typingText: getWaitingText(request.typingText, elapsedMs)
+  });
+}
+
+function renderPendingChatbotError(request, message) {
+  UI.renderChatbotThread(request.characterId, state, {
+    pendingMessageId: request.id,
+    pendingPlayerMessage: request.message,
+    pendingError: {
+      message,
+      onRetry: () => beginChatbotSend(request.message, request.characterId),
+      onCancel: () => {
+        if (pendingChatbotRequest?.id === request.id) pendingChatbotRequest = null;
+        UI.renderChatbotThread(request.characterId, state);
+      }
+    }
+  });
+}
+
+function cancelPendingChatbotRequest() {
+  const request = pendingChatbotRequest;
+  if (!request) return;
+  clearPendingChatbotTimers(request);
+  request.controller?.abort();
+  pendingChatbotRequest = null;
+  setChatbotSendingUi(false);
+  UI.renderChatbotThread(request.characterId, state);
+}
+
+async function beginChatbotSend(message, forcedCharacterId = null) {
+  if (pendingChatbotRequest) return;
+  const input = document.getElementById("chatbot-input");
+  const activeCharacterAtSend = forcedCharacterId || chatbotActiveCharacterId;
+  if (!activeCharacterAtSend) return;
+
+  setChatbotSendingUi(true);
+  input.value = "";
+
+  const controller = new AbortController();
+  let request = null;
+  const result = await sendChatbotMessage(activeCharacterAtSend, message, state, {
+    signal: controller.signal,
+    onPending: (pendingMessage, _character, typingText) => {
+      request = {
+        id: `chatbot-pending-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        characterId: activeCharacterAtSend,
+        message: pendingMessage,
+        typingText,
+        controller,
+        startedAt: Date.now(),
+        intervalId: null,
+        timeoutId: null,
+        timedOut: false
+      };
+      pendingChatbotRequest = request;
+      renderPendingChatbotRequest(request);
+      request.intervalId = setInterval(() => renderPendingChatbotRequest(request), 1000);
+      request.timeoutId = setTimeout(() => {
+        if (pendingChatbotRequest?.id !== request.id) return;
+        request.timedOut = true;
+        clearPendingChatbotTimers(request);
+        controller.abort();
+        pendingChatbotRequest = null;
+        setChatbotSendingUi(false);
+        renderPendingChatbotError(request, "暫時未收到回覆，可能是網絡或 API 服務太慢。");
+      }, 30000);
+    }
+  });
+
+  if (request && pendingChatbotRequest?.id !== request.id) return;
+  if (request) {
+    clearPendingChatbotTimers(request);
+    pendingChatbotRequest = null;
+  }
+  setChatbotSendingUi(false);
+
+  if (!result.ok) {
+    if (request) {
+      renderPendingChatbotError(request, result.error);
+    } else {
+      UI.renderChatbotThread(activeCharacterAtSend, state);
+      UI.showChatbotError(result.error);
+    }
+    return;
+  }
+  UI.renderChatbotThread(activeCharacterAtSend, state);
+  autosave();
 }
 
 function bindGoalSelectScreen() {
@@ -558,6 +821,18 @@ function bindContentEditor() {
   });
 }
 
+// Dev / author-only tool gate：內容編輯器唔係玩家功能，預設一定要 off。
+// devMode===true 先會顯示個入口，可以用 localStorage.debugDevMode==="true" 或者 URL ?dev=1 開。
+function isDevMode() {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("dev") === "1") return true;
+    return localStorage.getItem("debugDevMode") === "true";
+  } catch {
+    return false;
+  }
+}
+
 function init() {
   bindStartScreen();
   bindSetupScreen();
@@ -568,9 +843,13 @@ function init() {
   bindWeekActions();
   bindGoalsModal();
   bindHobbiesModal();
+  bindChatbotModal();
   bindGoalSelectScreen();
   bindSettingsScreen();
-  bindContentEditor();
+  if (isDevMode()) {
+    document.getElementById("dev-tools-section").classList.remove("hidden");
+    bindContentEditor();
+  }
   validateContentData();
 }
 

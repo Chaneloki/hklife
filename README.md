@@ -10,14 +10,25 @@
 
 ## 點樣開啟
 
-呢個專案用咗 ES Modules（`import` / `export`），瀏覽器基於安全限制，**唔可以直接開 `index.html`（file://）**，一定要用本地伺服器開啟，例如：
+呢個專案用咗 ES Modules（`import` / `export`），瀏覽器基於安全限制，**唔可以直接開 `index.html`（file://）**，一定要用本地伺服器開啟。
 
-- VS Code：安裝 `Live Server` 擴充功能，右鍵 `index.html` → `Open with Live Server`
-- 或者用終端機（喺專案根目錄執行）：
-  ```
-  python3 -m http.server 8000
-  ```
-  然後瀏覽器開 `http://localhost:8000`
+如果只玩純前端功能，任何靜態 server 都可以；但如果要用「傾偈」入面嘅 BYOK Gemini／DeepSeek relay，**一定要用本專案提供嘅 `serve.py`**，因為普通 Live Server / `python3 -m http.server` 唔會建立 `/api/chatbot/byok`。
+
+喺專案根目錄執行：
+
+```
+python3 serve.py 8000
+```
+
+然後瀏覽器開 `http://localhost:8000`。
+
+唔好用以下方式測試 Chatbot BYOK：
+
+```
+python3 -m http.server 8000
+```
+
+亦唔好用 VS Code Live Server 測試 BYOK relay；呢兩種只會提供靜態檔案，`POST /api/chatbot/byok` 會不存在。
 
 ## 檔案結構
 

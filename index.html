@@ -65,6 +65,7 @@
         <div id="urgent-goals-list" class="urgent-goals-list"></div>
         <h3 class="panel-title">核心資源</h3>
         <div id="stats-grid" class="stats-grid"></div>
+        <div id="skill-list" class="skill-list"></div>
       </div>
 
       <div id="tab-week" class="tab-panel">
@@ -102,8 +103,13 @@
           <button id="btn-reselect-goal" class="btn btn-secondary btn-full">🎯 重新揀本學期心願</button>
           <button id="btn-save" class="btn btn-secondary btn-full">💾 儲存遊戲</button>
           <button id="btn-load" class="btn btn-secondary btn-full">📂 讀取存檔</button>
-          <button id="btn-open-content-editor" class="btn btn-secondary btn-full">🛠️ 內容編輯器</button>
           <button id="btn-restart" class="btn btn-danger btn-full">🔄 重新開始</button>
+        </div>
+
+        <!-- Dev / author-only tool：預設隱藏，devMode true 先會顯示（localStorage.debugDevMode==="true" 或 ?dev=1） -->
+        <div id="dev-tools-section" class="settings-list hidden">
+          <h3 class="panel-title">🛠️ Dev Tools</h3>
+          <button id="btn-open-content-editor" class="btn btn-secondary btn-full">🛠️ 內容編輯器</button>
         </div>
       </div>
 
@@ -134,14 +140,66 @@
       <span id="message-badge" class="message-badge hidden">0</span>
     </button>
 
-    <!-- 訊息列表 overlay -->
+    <!-- 訊息列表／傾偈 overlay：共用一個浮動按鈕入口，用 tab 分開「訊息」（authored story message）
+         同「傾偈」（Chatbot bonus function，唔消耗 AP，唔係正式事件） -->
     <div id="message-list-overlay" class="dialogue-overlay hidden">
-      <div class="dialogue-box">
+      <div class="dialogue-box guide-box">
         <div class="modal-header-row">
-          <h3>訊息</h3>
+          <h3 id="message-chatbot-title">訊息</h3>
           <button id="btn-close-message-list" class="modal-close-btn">✕</button>
         </div>
-        <div id="message-list-body"></div>
+        <div class="goals-tabs-row">
+          <button id="tab-btn-messages" class="option-chip goals-tab-chip selected">📨 訊息</button>
+          <button id="tab-btn-chatbot" class="option-chip goals-tab-chip">💬 傾偈</button>
+        </div>
+
+        <div id="message-tab-body">
+          <div id="message-list-body"></div>
+        </div>
+
+        <div id="chatbot-tab-body" class="hidden">
+          <p class="modal-sub">同已經識得嘅人隨便傾下偈，唔會消耗 AP，每人每週最多因為傾偈加少少關係。</p>
+
+          <!-- BYOK：呢個聊天功能需要你自己嘅 Gemini 或 DeepSeek API key。API key 只會用嚟向你揀嘅
+               AI provider 發送角色聊天請求，唔會存落遊戲存檔，亦唔會傳去我哋嘅伺服器保存。 -->
+          <div id="chatbot-key-settings" class="chatbot-key-settings">
+            <p class="modal-sub" style="margin-top:0;">呢個聊天功能需要你自己嘅 Gemini 或 DeepSeek API key。API key 只會用嚟向你揀嘅 AI provider 發送角色聊天請求，唔會存落遊戲存檔，亦唔會傳去我哋嘅伺服器保存。</p>
+            <div id="chatbot-provider-row" class="chatbot-provider-row"></div>
+
+            <label class="chatbot-field-label">Model（provider 隨時會加新 model，preset 只係建議值，可以手動改）</label>
+            <div class="chatbot-model-row">
+              <select id="chatbot-model-select"></select>
+              <button id="btn-chatbot-fetch-models" class="btn btn-secondary btn-small">取得可用模型</button>
+            </div>
+            <input id="chatbot-model-manual-input" type="text" placeholder="或者手動輸入 model id" autocomplete="off" />
+
+            <div id="chatbot-key-status" class="chatbot-key-status"></div>
+            <input id="chatbot-key-input" type="password" placeholder="貼入你嘅 API key" autocomplete="off" />
+            <label class="chatbot-remember-row">
+              <input type="checkbox" id="chatbot-key-remember" />
+              記住喺呢部裝置（存喺 localStorage；唔勾就淨係呢次瀏覽器分頁有效）
+            </label>
+            <div class="chatbot-key-btn-row">
+              <button id="btn-chatbot-save-key" class="btn btn-secondary btn-small">儲存</button>
+              <button id="btn-chatbot-test-key" class="btn btn-secondary btn-small">測試此 model</button>
+              <button id="btn-chatbot-clear-key" class="btn btn-danger btn-small">清除</button>
+            </div>
+            <div id="chatbot-key-test-result" class="chatbot-key-test-result hidden"></div>
+          </div>
+
+          <div id="chatbot-character-list"></div>
+          <div id="chatbot-thread-view" class="hidden">
+            <button id="btn-chatbot-back" class="btn-small btn-secondary">← 返回名單</button>
+            <div id="chatbot-thread-header" class="chatbot-thread-header"></div>
+            <div id="chatbot-thread-messages" class="chatbot-thread-messages"></div>
+            <div id="chatbot-thread-error" class="chatbot-thread-error hidden"></div>
+            <div class="chatbot-input-row">
+              <input id="chatbot-input" type="text" placeholder="打啲嘢傾偈..." maxlength="200" />
+              <button id="btn-chatbot-send" class="btn btn-primary btn-small">送出</button>
+              <button id="btn-chatbot-cancel" class="btn btn-secondary btn-small hidden">取消</button>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 

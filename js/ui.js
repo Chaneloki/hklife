@@ -2,17 +2,21 @@
 // 專門負責 render，唔應該喺呢度處理遊戲邏輯（邏輯全部由 engine.js 提供）
 
 import { getAllBackgroundCategories } from "../data/backgrounds.js";
-import { getCharacterById } from "../data/characters.js";
-import { getActionById } from "../data/actions.js";
+import { getCharacterById, getCharacterDisplayName } from "../data/characters.js";
+import { getActionById, actionCategories } from "../data/actions.js";
 import { getLocationById } from "../data/locations.js";
 import { getStageCategoryMeta } from "../data/relationshipStages.js";
 import { termGoals, getGoalById, getDirectionById } from "../data/goals.js";
 import { getCompetitionById } from "../data/opportunities.js";
 import {
+  CHAT_PROVIDERS, getEligibleChatCharacters, getChatThread,
+  getSelectedProvider, getApiKey, maskApiKey, getSelectedModel, getModelDefaults
+} from "./chatbot.js";
+import {
   getCurrentStage, getCurrentTerm, getCurrentLocation,
   getUnlockedLocations, getKnownCharacters,
   getUnreadMessageObjects, getGoalProgressPercent, getGoalSubProgress, getAllActionsData,
-  getActionTabs, getAvailableActionsByCategory, getRecommendedActions,
+  getActionTabs, getAvailableActionsByCategory, resolveActionRelatedPerson,
   getMessageVariantByRelationship, getAvailableChoicesByRelationship,
   generateRelationshipSummary, getChoicePreview, getGoalStatus
 } from "./engine.js";
@@ -493,6 +497,21 @@ export function showGoalsOverlay() { document.getElementById("goals-overlay").cl
 export function hideGoalsOverlay() { document.getElementById("goals-overlay").classList.add("hidden"); }
 
 // ---------- 興趣班管理 modal ----------
+// 每週固定嘅得／失：resourceEffects（property 升跌）＋ skillExpDelta（技能經驗）＋ moneyCost（金錢）＋ weeklyApCost（AP）
+function hobbyEffectTagsHtml(h) {
+  const tags = [];
+  (h.resourceEffects || []).forEach(e => {
+    const cls = e.amount >= 0 ? "tag-positive" : "tag-negative";
+    tags.push(`<span class="effect-tag ${cls}">${e.stat}${e.amount >= 0 ? "+" : ""}${e.amount}</span>`);
+  });
+  Object.entries(h.skillExpDelta || {}).forEach(([skill, amount]) => {
+    tags.push(`<span class="effect-tag tag-positive">${skill}經驗+${amount}</span>`);
+  });
+  if (h.moneyCost) tags.push(`<span class="effect-tag tag-negative">金錢-${h.moneyCost}</span>`);
+  tags.push(`<span class="effect-tag">每週-${h.weeklyApCost} AP</span>`);
+  return tags.join("");
+}
+
 export function showHobbiesModal(state, allHobbies, knownComps, handlers, qualification = {}, overqualifiedReminders = []) {
   const el = document.getElementById("hobbies-body");
   const activeHtml = state.activeHobbies.map(hobbyId => {
@@ -504,6 +523,7 @@ export function showHobbiesModal(state, allHobbies, knownComps, handlers, qualif
           <span class="guide-card-icon">${hobby.icon}</span>
           <div><div class="guide-card-name">${hobby.name}</div><span class="guide-card-cat">${hobby.category} ・ 每週 ${hobby.weeklyApCost} AP</span></div>
         </div>
+        <div class="action-effect-tags">${hobbyEffectTagsHtml(hobby)}</div>
         <button class="btn-small btn-danger hobby-quit-btn" data-id="${hobby.id}">放棄</button>
       </div>
     `;
@@ -521,6 +541,7 @@ export function showHobbiesModal(state, allHobbies, knownComps, handlers, qualif
             <div><div class="guide-card-name">${h.name}</div><span class="guide-card-cat">${h.category} ・ 每週 ${h.weeklyApCost} AP ・ $${h.moneyCost}</span></div>
           </div>
           <div class="guide-tip-box">💡 ${h.description}</div>
+          <div class="action-effect-tags">${hobbyEffectTagsHtml(h)}</div>
           <button class="btn-small btn-secondary hobby-join-btn" data-id="${h.id}" ${onCooldown ? "disabled" : ""}>${onCooldown ? "暫時未可以再揀" : "參加"}</button>
         </div>
       `;
@@ -563,6 +584,159 @@ export function showHobbiesModal(state, allHobbies, knownComps, handlers, qualif
 }
 export function showHobbiesOverlay() { document.getElementById("hobbies-overlay").classList.remove("hidden"); }
 export function hideHobbiesOverlay() { document.getElementById("hobbies-overlay").classList.add("hidden"); }
+
+// ---------- Chatbot bonus function：ChatbotPanel 只顯示已解鎖角色，唔顯示未解鎖／神秘人 ----------
+// 開／關成個 overlay 而家同「訊息」共用同一個浮動按鈕入口（見 js/main.js switchMessageChatbotTab），
+// 呢度淨係負責 tab 入面嘅內容 render。
+// BYOK：provider chip 淨係反映玩家自己揀咗邊個，唔再查任何 server-side key 狀態
+export function renderChatbotProviderRow(onSelectProvider) {
+  const el = document.getElementById("chatbot-provider-row");
+  const currentProvider = getSelectedProvider();
+  el.innerHTML = CHAT_PROVIDERS.map(p =>
+    `<button class="chatbot-provider-chip ${p.id === currentProvider ? "selected" : ""}" data-provider="${p.id}">${p.label}</button>`
+  ).join("");
+  el.querySelectorAll(".chatbot-provider-chip").forEach(btn => {
+    btn.addEventListener("click", () => onSelectProvider(btn.dataset.provider));
+  });
+}
+
+// 顯示目前揀緊嗰個 provider 有冇存 key、只顯示 masked 版本，唔會顯示完整 key
+export function renderChatbotKeyStatus() {
+  const provider = getSelectedProvider();
+  const key = getApiKey(provider);
+  const statusEl = document.getElementById("chatbot-key-status");
+  const providerLabel = CHAT_PROVIDERS.find(p => p.id === provider)?.label || provider;
+  statusEl.textContent = key
+    ? `${providerLabel}：已設定 key（${maskApiKey(key)}）`
+    : `${providerLabel}：未設定 API key`;
+  document.getElementById("chatbot-key-input").value = "";
+  document.getElementById("chatbot-key-test-result").classList.add("hidden");
+}
+
+// Model dropdown：preset（可以嚟自 backend /api/chatbot/defaults 或者 fetch 返嚟嘅可用清單）
+// + 手動輸入 input，兩個都可以決定最終用邊個 model，手動輸入優先
+export async function renderChatbotModelRow(extraModels = []) {
+  const provider = getSelectedProvider();
+  const defaults = await getModelDefaults();
+  const presetInfo = defaults[provider] || { presets: [], default: "" };
+  const currentModel = getSelectedModel(provider, presetInfo.default);
+
+  const options = [...new Set([...(presetInfo.presets || []), ...extraModels])];
+  const selectEl = document.getElementById("chatbot-model-select");
+  selectEl.innerHTML = options.map(m =>
+    `<option value="${m}" ${m === currentModel ? "selected" : ""}>${m}</option>`
+  ).join("");
+
+  const manualInput = document.getElementById("chatbot-model-manual-input");
+  manualInput.value = options.includes(currentModel) ? "" : currentModel;
+  manualInput.placeholder = `或者手動輸入 model id（目前：${currentModel || "未揀"}）`;
+}
+
+export function showChatbotKeyTestResult(ok, message) {
+  const el = document.getElementById("chatbot-key-test-result");
+  el.textContent = message;
+  el.className = `chatbot-key-test-result ${ok ? "success" : "error"}`;
+}
+
+export function renderChatbotCharacterList(state, onSelectCharacter) {
+  const el = document.getElementById("chatbot-character-list");
+  const characters = getEligibleChatCharacters(state);
+  if (!characters.length) {
+    el.innerHTML = `<p class="muted-text">暫時未有可以聊天的人。</p>`;
+    return;
+  }
+  el.innerHTML = characters.map(c => {
+    const thread = getChatThread(c.id, state);
+    const summary = generateRelationshipSummary(c.id, state);
+    const lastChatted = thread?.lastChattedWeek ? `上次傾偈：第 ${thread.lastChattedWeek} 週` : "仲未傾過偈";
+    return `
+      <div class="chatbot-char-card" data-id="${c.id}">
+        <span class="guide-card-icon">${c.avatarEmoji || "🙂"}</span>
+        <div class="chatbot-char-card-body">
+          <div class="chatbot-char-name">${c.name}</div>
+          <div class="chatbot-char-meta">${c.roleLabel}${summary ? ` ・ ${summary.stageLabel}` : ""} ・ ${lastChatted}</div>
+        </div>
+      </div>
+    `;
+  }).join("");
+  el.querySelectorAll(".chatbot-char-card").forEach(card => {
+    card.addEventListener("click", () => onSelectCharacter(card.dataset.id));
+  });
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+export function renderChatbotThread(characterId, state, options = {}) {
+  const character = getCharacterById(characterId, state);
+  const thread = getChatThread(characterId, state);
+  document.getElementById("chatbot-thread-header").innerHTML = character
+    ? `<div class="chatbot-char-name">${character.avatarEmoji || "🙂"} ${character.name}</div><div class="chatbot-char-meta">${character.roleLabel}</div>`
+    : "";
+  const messagesEl = document.getElementById("chatbot-thread-messages");
+  const history = thread?.chatHistory || [];
+  const visibleMessages = [...history];
+  if (options.pendingPlayerMessage) {
+    visibleMessages.push({ role: "player", text: options.pendingPlayerMessage });
+  }
+  if (options.isTyping) {
+    visibleMessages.push({
+      role: "character chatbot-msg-typing",
+      text: options.typingText || "正在回覆",
+      typing: true,
+      pendingId: options.pendingMessageId || "pending"
+    });
+  }
+  if (options.pendingError) {
+    visibleMessages.push({
+      role: "character chatbot-msg-error",
+      text: options.pendingError.message,
+      errorActions: true,
+      pendingId: options.pendingMessageId || "pending"
+    });
+  }
+  messagesEl.innerHTML = visibleMessages.length
+    ? visibleMessages.map(m => {
+        const pendingAttr = m.pendingId ? ` data-pending-id="${escapeHtml(m.pendingId)}"` : "";
+        const content = m.typing
+          ? `${escapeHtml(m.text)}<span class="typing-dots" aria-hidden="true"><span></span><span></span><span></span></span>`
+          : escapeHtml(m.text);
+        const actions = m.errorActions
+          ? `<div class="chatbot-pending-actions">
+              <button class="btn-small btn-secondary chatbot-retry-btn" type="button">重新嘗試</button>
+              <button class="btn-small btn-secondary chatbot-cancel-pending-btn" type="button">取消</button>
+            </div>`
+          : "";
+        return `<div class="chatbot-msg chatbot-msg-${m.role}"${pendingAttr}>${content}${actions}</div>`;
+      }).join("")
+    : `<p class="muted-text">同${character?.name || "佢"}講句嘢啦。</p>`;
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+  document.getElementById("chatbot-thread-error").classList.add("hidden");
+  if (options.pendingError) {
+    const retryBtn = messagesEl.querySelector(".chatbot-retry-btn");
+    const cancelBtn = messagesEl.querySelector(".chatbot-cancel-pending-btn");
+    if (retryBtn && options.pendingError.onRetry) retryBtn.addEventListener("click", options.pendingError.onRetry);
+    if (cancelBtn && options.pendingError.onCancel) cancelBtn.addEventListener("click", options.pendingError.onCancel);
+  }
+}
+
+export function showChatbotError(message) {
+  const el = document.getElementById("chatbot-thread-error");
+  el.textContent = message;
+  el.classList.remove("hidden");
+}
+
+export function switchChatbotView(view) {
+  document.getElementById("chatbot-key-settings").classList.toggle("hidden", view === "thread");
+  document.getElementById("chatbot-character-list").classList.toggle("hidden", view === "thread");
+  document.getElementById("chatbot-thread-view").classList.toggle("hidden", view !== "thread");
+}
 
 // ---------- 內容編輯器（俾作者手動輸入正式內容，唔屬於遊戲內容本身） ----------
 const CONTENT_TYPE_LABELS = {
@@ -675,6 +849,26 @@ export function renderStatsGrid(state) {
   }).join("");
 }
 
+// ---------- Skill property：只顯示 skillExp > 0 嘅技能，唔顯示 0 分／未解鎖技能 ----------
+export function renderSkillList(state) {
+  const el = document.getElementById("skill-list");
+  if (!el) return;
+  const entries = Object.entries(state.skillExp || {}).filter(([, exp]) => exp > 0);
+  if (!entries.length) {
+    el.innerHTML = `<p class="muted-text skill-empty-text">暫時未開始任何技能。</p>`;
+    return;
+  }
+  el.innerHTML = `
+    <h3 class="panel-title">技能</h3>
+    ${entries.map(([skill, exp]) => `
+      <div class="skill-row">
+        <span class="skill-row-name">${skill}</span>
+        <span class="skill-row-exp">${exp} exp</span>
+      </div>
+    `).join("")}
+  `;
+}
+
 // ---------- 本週安排頁 ----------
 export function renderWeekHeader(state) {
   const el = document.getElementById("week-header");
@@ -743,11 +937,15 @@ export function renderLocationSwitcher(state, onSelectLocation) {
 }
 
 // ---------- 行動分類 tabs + 行動清單 ----------
-let currentActionTab = "推薦";
+let currentActionTab = null;
 
+// 淨係顯示「而家有嘢」嘅 tab：班務身份呢類要解鎖先出現嘅分類，
+// 冇任何可用 action 之前唔會顯示個 tab；解鎖咗先自動出現。
 export function renderActionTabs(state, onChangeTab) {
   const el = document.getElementById("action-tabs-row");
-  const tabs = getActionTabs();
+  const allTabs = getActionTabs();
+  const tabs = allTabs.filter(tab => getAvailableActionsByCategory(tab, state).length > 0);
+  if (!currentActionTab || !tabs.includes(currentActionTab)) currentActionTab = tabs[0] || null;
   el.innerHTML = tabs.map(tab =>
     `<button class="action-tab-chip ${tab === currentActionTab ? "selected" : ""}" data-tab="${tab}">${tab}</button>`
   ).join("");
@@ -761,7 +959,7 @@ export function renderActionTabs(state, onChangeTab) {
 
 export function renderActionList(state, onChooseAction) {
   const el = document.getElementById("action-list");
-  const list = currentActionTab === "推薦" ? getRecommendedActions(state, 5) : getAvailableActionsByCategory(currentActionTab, state);
+  const list = currentActionTab ? getAvailableActionsByCategory(currentActionTab, state) : [];
 
   if (!list.length) {
     el.innerHTML = `<p class="muted-text">呢個分類暫時冇可用行動。</p>`;
@@ -771,6 +969,10 @@ export function renderActionList(state, onChooseAction) {
   el.innerHTML = "";
   list.forEach(action => {
     const affordable = state.ap >= action.apCost;
+    // Target 喺呢度 resolve 一次就即刻定案（action instance），render 用嚟顯示 name tag，
+    // onChooseAction 一定要沿用返呢個值，唔可以喺 click 嗰陣重新 resolve／重新 random，
+    // 否則會出現「UI 顯示 A，但實際加 B」
+    const target = resolveActionRelatedPerson(action, state);
     const item = document.createElement("div");
     item.className = "action-item" + (affordable ? "" : " action-item-disabled");
     item.innerHTML = `
@@ -779,17 +981,20 @@ export function renderActionList(state, onChooseAction) {
         <div class="action-name">${action.name}<span class="ap-cost-badge">-${action.apCost} AP</span></div>
         <div class="action-desc">${action.description}</div>
         <div class="action-effect-tags">${effectTagsHtml(action.effects)}</div>
-        <div class="action-meta-row">${actionMetaHtml(action)}</div>
+        <div class="action-meta-row">${actionMetaHtml(action, state, target)}</div>
       </div>
       <span class="action-tag">${action.category}</span>
     `;
-    item.addEventListener("click", () => onChooseAction(action.id));
+    item.addEventListener("click", () => onChooseAction(action.id, target ? target.id : null));
     el.appendChild(item);
   });
   return list;
 }
 
-function actionMetaHtml(action) {
+// state 冇傳入（例如行動指南 wiki 模式）就淨係顯示唔涉及玩家已知狀態嘅 meta（地點／限時／目標），
+// 唔會顯示人物 name tag。target 由 caller（renderActionList）resolve 一次傳入，呢度唔再自己
+// call resolveActionRelatedPerson，確保顯示同 onChooseAction 用嘅係同一個 target。
+function actionMetaHtml(action, state, target) {
   const chips = [];
   const locCondition = (action.conditions || []).find(c => c.type === "currentLocation");
   if (locCondition) {
@@ -799,13 +1004,12 @@ function actionMetaHtml(action) {
   if (action.limitedWeeks && action.limitedWeeks.length) {
     chips.push(`<span class="meta-chip meta-chip-limited">⏰ 限時第${action.limitedWeeks.join("/")}週</span>`);
   }
-  if (action.relatedCharacterId) {
-    const char = getCharacterById(action.relatedCharacterId);
-    chips.push(`<span class="meta-chip">👤 ${char ? char.name : action.relatedCharacterId}</span>`);
-  }
-  if (action.fromCharacterId) {
-    const char = getCharacterById(action.fromCharacterId);
-    chips.push(`<span class="meta-chip meta-chip-invite">✉️ 來自${char ? char.name : "邀請"}</span>`);
+  // 人物 name tag：target 一律嚟自已解鎖角色（s.knownCharacters），冇解鎖到就乜都唔顯示——
+  // 唔顯示灰色名、唔顯示「???」、唔顯示 roleLabel 呢類提示
+  if (target) chips.push(`<span class="meta-chip">👤 ${target.name}</span>`);
+  if (state && action.fromCharacterId && state.knownCharacters.includes(action.fromCharacterId)) {
+    const fromChar = getCharacterById(action.fromCharacterId, state);
+    if (fromChar) chips.push(`<span class="meta-chip meta-chip-invite">✉️ 來自${fromChar.name}</span>`);
   }
   if (action.goalProgress && action.goalProgress.length) {
     chips.push(`<span class="meta-chip">🎯 推進：${action.goalProgress.join("／")}</span>`);
@@ -913,7 +1117,7 @@ export function renderMessageList(state, onOpenMessage, onSkipMessage) {
       <span class="avatar-emoji">${sender ? sender.avatarEmoji : "💬"}</span>
       <div class="message-row-body">
         <div class="message-row-title">${m.title}</div>
-        <div class="message-row-sub">${sender ? sender.name : "未知"}${m.urgency === "urgent" ? " ・ 緊急" : ""}</div>
+        <div class="message-row-sub">${sender ? (getCharacterDisplayName(m.senderId) || sender.name) : "未知"}${m.urgency === "urgent" ? " ・ 緊急" : ""}</div>
       </div>
     `;
     row.querySelector(".message-row-body").addEventListener("click", () => onOpenMessage(m.id));
@@ -934,9 +1138,10 @@ export function hideMessageListOverlay() { document.getElementById("message-list
 // ---------- 對話／訊息內容框（共用） ----------
 export function showDialogue(dialogue, onChoiceSelected, state) {
   const overlay = document.getElementById("dialogue-overlay");
-  const speaker = getCharacterById(dialogue.senderId || dialogue.speakerId);
+  const speakerId = dialogue.senderId || dialogue.speakerId;
+  const speaker = getCharacterById(speakerId);
   document.getElementById("dialogue-avatar").textContent = speaker ? speaker.avatarEmoji : "💬";
-  document.getElementById("dialogue-name").textContent = speaker ? speaker.name : "神秘人";
+  document.getElementById("dialogue-name").textContent = speaker ? (getCharacterDisplayName(speakerId) || speaker.name) : "神秘人";
 
   const lines = state ? getMessageVariantByRelationship(dialogue, state) : dialogue.lines;
   document.getElementById("dialogue-lines").innerHTML = lines.map(l => `<p>${l}</p>`).join("");
@@ -1000,7 +1205,8 @@ export function hideGuideModal() { document.getElementById("guide-overlay").clas
 
 function renderGuideFilters() {
   const el = document.getElementById("guide-filter-row");
-  const cats = ["全部", "學習", "朋友", "家庭", "興趣", "探索", "休息", "支線"];
+  // 直接用 data/actions.js 嘅 actionCategories（單一資料來源），避免呢度同 action 分類再次走樣
+  const cats = actionCategories;
   el.innerHTML = cats.map(cat =>
     `<button class="guide-filter-chip ${cat === currentGuideFilter ? "selected" : ""}" data-cat="${cat}">${cat}</button>`
   ).join("");
@@ -1150,6 +1356,7 @@ export function renderAll(state, handlers) {
   renderGoalProgressCard(state);
   renderUrgentGoalsList(state, handlers.urgentGoals || []);
   renderStatsGrid(state);
+  renderSkillList(state);
 
   renderWeekHeader(state);
   renderUrgentBanner(state);
