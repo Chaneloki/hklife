@@ -1223,16 +1223,43 @@ export function showDialogue(dialogue, onChoiceSelected, state, options = {}) {
     ? (getCharacterDisplayName(speakerId, state) || speaker.name)
     : (dialogue.speakerDisplayName || dialogue.senderName || "");
   const avatarEl = document.getElementById("dialogue-avatar");
+  avatarEl.classList.remove("hidden");
   avatarEl.src = speaker ? resolveCharacterIcon(speaker, state) : (speakerDisplayName === "家人" || speakerDisplayName === "媽媽" || speakerDisplayName === "爸爸" ? DEFAULT_ADULT_ICON : DEFAULT_UNKNOWN_ICON);
   avatarEl.alt = speaker ? escapeHtml(speaker.name || "") : escapeHtml(speakerDisplayName);
-  document.getElementById("dialogue-name").textContent = speakerDisplayName || "旁白";
+
+  // secondarySenderId：三人事件（player + 2 same-class NPC）第二個 NPC，見 js/engine.js
+  // drawOpeningEventForWeek()。冇嘅話（絕大部分單人事件）就淨係顯示返 primary，行為不變。
+  const secondaryAvatarEl = document.getElementById("dialogue-avatar-secondary");
+  const secondaryId = dialogue.secondarySenderId;
+  const secondarySpeaker = secondaryId ? getCharacterById(secondaryId, state) : null;
+  const secondaryDisplayName = secondarySpeaker
+    ? (getCharacterDisplayName(secondaryId, state) || secondarySpeaker.name)
+    : (dialogue.secondarySpeakerDisplayName || "");
+  if (secondarySpeaker || secondaryDisplayName) {
+    secondaryAvatarEl.src = secondarySpeaker ? resolveCharacterIcon(secondarySpeaker, state) : DEFAULT_UNKNOWN_ICON;
+    secondaryAvatarEl.alt = escapeHtml(secondaryDisplayName);
+    secondaryAvatarEl.classList.remove("hidden");
+  } else {
+    secondaryAvatarEl.classList.add("hidden");
+    secondaryAvatarEl.removeAttribute("src");
+  }
+  const nameEl = document.getElementById("dialogue-name");
+  nameEl.textContent = secondaryDisplayName
+    ? `${speakerDisplayName || "旁白"}、${secondaryDisplayName}`
+    : (speakerDisplayName || "旁白");
 
   const lines = state ? getMessageVariantByRelationship(dialogue, state) : dialogue.lines;
-  document.getElementById("dialogue-lines").innerHTML = lines.map(line => {
-    const normalized = typeof line === "string" ? { type: "speech", text: line } : line;
-    const cls = normalized.type === "narrator" ? "dialogue-narrator-line" : "dialogue-speech-line";
-    return `<p class="${cls}">${escapeHtml(normalized.text || "")}</p>`;
-  }).join("");
+  const linesEl = document.getElementById("dialogue-lines");
+  if (dialogue.eventDisplay) {
+    renderEventDisplay(dialogue, state, { avatarEl, secondaryAvatarEl, nameEl, linesEl });
+  } else {
+    linesEl.classList.remove("event-display");
+    linesEl.innerHTML = lines.map(line => {
+      const normalized = typeof line === "string" ? { type: "speech", text: line } : line;
+      const cls = normalized.type === "narrator" ? "dialogue-narrator-line" : "dialogue-speech-line";
+      return `<p class="${cls}">${escapeHtml(normalized.text || "")}</p>`;
+    }).join("");
+  }
 
   const choicesEl = document.getElementById("dialogue-choices");
   choicesEl.innerHTML = "";
@@ -1333,6 +1360,76 @@ export function showDialogue(dialogue, onChoiceSelected, state, options = {}) {
   overlay.classList.remove("hidden");
 }
 
+function renderEventDisplay(dialogue, state, { avatarEl, secondaryAvatarEl, nameEl, linesEl }) {
+  const model = dialogue.eventDisplay;
+  const header = model.header || {};
+  const participants = header.participants || [];
+  const primary = participants[0];
+  const secondary = participants[1];
+  const primaryCharacter = primary?.id ? getCharacterById(primary.id, state) : null;
+  const secondaryCharacter = secondary?.id ? getCharacterById(secondary.id, state) : null;
+
+  if (primaryCharacter) {
+    avatarEl.src = resolveCharacterIcon(primaryCharacter, state);
+    avatarEl.alt = escapeHtml(primary.displayName || primaryCharacter.name || "");
+    avatarEl.classList.remove("hidden");
+  } else if (header.displayMode === "family") {
+    avatarEl.src = DEFAULT_ADULT_ICON;
+    avatarEl.alt = "家人";
+    avatarEl.classList.remove("hidden");
+  } else if (header.displayMode === "narrator" || header.displayMode === "memory") {
+    avatarEl.classList.add("hidden");
+    avatarEl.removeAttribute("src");
+  }
+
+  if (secondaryCharacter) {
+    secondaryAvatarEl.src = resolveCharacterIcon(secondaryCharacter, state);
+    secondaryAvatarEl.alt = escapeHtml(secondary.displayName || secondaryCharacter.name || "");
+    secondaryAvatarEl.classList.remove("hidden");
+  } else {
+    secondaryAvatarEl.classList.add("hidden");
+    secondaryAvatarEl.removeAttribute("src");
+  }
+
+  const participantNames = participants.map(p => p.displayName).filter(Boolean).join("、");
+  nameEl.innerHTML = `
+    <span>${escapeHtml(participantNames || header.title || "旁白")}</span>
+    ${header.title ? `<small class="event-header-title">${escapeHtml(header.title)}</small>` : ""}
+  `;
+
+  const scene = model.scenePreview || {};
+  const fullText = scene.fullText || "";
+  const shortText = scene.shortText || fullText;
+  const tagsHtml = (header.subtitleTags || []).map(tag => `<span>${escapeHtml(tag)}</span>`).join("");
+  const blocksHtml = (model.dialogueBlocks || []).map(block => {
+    const type = block.type === "speaker" ? "speaker" : "narration";
+    const speakerName = block.speakerName || block.speaker || "";
+    return `
+      <div class="event-dialogue-block event-dialogue-${type}">
+        ${type === "speaker" && speakerName ? `<div class="event-dialogue-speaker-name">${escapeHtml(speakerName)}</div>` : ""}
+        <div>${escapeHtml(block.text || "")}</div>
+      </div>
+    `;
+  }).join("");
+
+  linesEl.classList.add("event-display");
+  linesEl.innerHTML = `
+    ${tagsHtml ? `<div class="event-subtitle-tags">${tagsHtml}</div>` : ""}
+    ${shortText ? `
+      <div class="event-scene-preview">
+        <div>${escapeHtml(shortText)}</div>
+        ${fullText && fullText !== shortText ? `
+          <details>
+            <summary>看完整前情</summary>
+            <p>${escapeHtml(fullText)}</p>
+          </details>
+        ` : ""}
+      </div>
+    ` : ""}
+    <div class="event-dialogue-blocks">${blocksHtml}</div>
+  `;
+}
+
 function choicePreviewHtml(preview, state) {
   const parts = [];
   if (preview.affectedCharacters.length) parts.push(`👤 ${preview.affectedCharacters.join("、")}`);
@@ -1357,21 +1454,22 @@ export function showOpeningEventOutcome({ playerLine, playerLineType, resultDial
   }
   if (resultDialogue && resultDialogue.text) {
     const isNarrator = !resultDialogue.speaker || resultDialogue.speaker === "旁白";
+    const resultChunks = splitOutcomeText(resultDialogue.text);
     storyHtml.push(`
       <div class="outcome-story-bubble ${isNarrator ? "outcome-story-narrator" : "outcome-story-speaker"}">
         ${!isNarrator ? `<div class="outcome-story-speaker-name">${escapeHtml(resultDialogue.speaker)}</div>` : ""}
-        <div>${escapeHtml(resultDialogue.text)}</div>
+        ${resultChunks.map(chunk => `<div class="outcome-story-chunk">${escapeHtml(chunk)}</div>`).join("")}
       </div>
     `);
   }
-  const pointHtml = (outcomeSummary || []).map(l => `<div class="outcome-line">${l}</div>`).join("");
+  const pointHtml = (outcomeSummary || []).map(l => `<span class="outcome-chip">${escapeHtml(compactOutcomeLine(l))}</span>`).join("");
 
   const hasAnything = storyHtml.length || pointHtml;
   if (!hasAnything) { onContinue(); return; }
 
   document.getElementById("outcome-summary-list").innerHTML = `
     ${storyHtml.length ? `<div class="outcome-story-block">${storyHtml.join("")}</div>` : ""}
-    ${pointHtml}
+    ${pointHtml ? `<div class="outcome-chip-row">${pointHtml}</div>` : ""}
   `;
   document.getElementById("outcome-summary-overlay").classList.remove("hidden");
   const btn = document.getElementById("btn-outcome-summary-continue");
@@ -1381,6 +1479,35 @@ export function showOpeningEventOutcome({ playerLine, playerLineType, resultDial
     document.getElementById("outcome-summary-overlay").classList.add("hidden");
     onContinue();
   });
+}
+
+function splitOutcomeText(text, maxLength = 150) {
+  const cleaned = String(text || "").trim();
+  if (cleaned.length <= maxLength) return [cleaned].filter(Boolean);
+  const sentences = cleaned.match(/[^。！？!?]+[。！？!?]?/g) || [cleaned];
+  const chunks = [];
+  let current = "";
+  sentences.forEach(sentence => {
+    if ((current + sentence).length > maxLength && current) {
+      chunks.push(current.trim());
+      current = sentence;
+    } else {
+      current += sentence;
+    }
+  });
+  if (current.trim()) chunks.push(current.trim());
+  return chunks;
+}
+
+function compactOutcomeLine(line) {
+  const text = String(line || "");
+  const statMatch = text.match(/^你嘅(.+?)(提升咗少少|跌咗少少)$/);
+  if (statMatch) return `${statMatch[1]} ${statMatch[2].startsWith("提升") ? "↑" : "↓"}`;
+  const skillMatch = text.match(/^(.+?)經驗(增加咗少少|減少咗少少)$/);
+  if (skillMatch) return `${skillMatch[1]}經驗 ${skillMatch[2].startsWith("增加") ? "↑" : "↓"}`;
+  const relMatch = text.match(/^(.+?)對你嘅感覺有咗變化$/);
+  if (relMatch) return `${relMatch[1]}關係 ↑`;
+  return text;
 }
 
 // ---------- 回覆後果摘要 ----------

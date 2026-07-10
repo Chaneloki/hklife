@@ -11,7 +11,7 @@ import { getStageById } from "../data/stages.js";
 import { locations, getLocationById } from "../data/locations.js";
 import { getTermById, getNextTerm } from "../data/schedule.js";
 import { termGoals, stageGoals, lifeDirections, getGoalById, getDirectionById } from "../data/goals.js";
-import { getCharacterById, getAllGeneratedCharacters, getCharacterDisplayName } from "../data/characters.js";
+import { applyS2StartClassmateNameKnowledge, getCharacterById, getAllGeneratedCharacters, getCharacterDisplayName } from "../data/characters.js";
 import { getPersonalityById } from "../data/identityPersonalities.js";
 import { resolveGrowthTendency } from "../data/endings.js";
 import { routeSeeds, getRouteSeedById, actionCategorySeedMap, characterRouteSeedMap } from "../data/routeSeeds.js";
@@ -29,7 +29,7 @@ import { hobbies, getHobbyById, MAX_ACTIVE_HOBBIES } from "../data/hobbies.js";
 import { competitions, getCompetitionById } from "../data/opportunities.js";
 import { getStoryScenesForEvents } from "../data/storyScenes.js";
 import { getOpeningEventById, getOpeningEventVariant, sameAgeNeighborPool } from "../data/openingEvents.js";
-import { pickOpeningEventForWeek, resetOpeningEventWeekState, resolveOpeningEventNpcId } from "../data/openingEventRegistry.js";
+import { pickOpeningEventForWeek, resetOpeningEventWeekState, resolveOpeningEventNpcId, resolveSecondaryOpeningEventNpcId } from "../data/openingEventRegistry.js";
 import { findSixWeekReviewStory } from "../data/reviewStoryRegistry.js";
 import {
   ACTIVE_MESSAGE_THRESHOLDS,
@@ -424,7 +424,14 @@ export function resolveActiveMessageFreeReply(instanceId, playerFreeReply, evalu
   if (![-1, 0, 1].includes(evaluation.relationshipDelta)) return { ok: false, message: "暫時未能理解這次回覆，請再試一次。" };
   if (!evaluation.npcFollowUp || !evaluation.resultText) return { ok: false, message: "暫時未能理解這次回覆，請再試一次。" };
 
-  const requestedRelationshipDelta = evaluation.relationshipDelta;
+  const relationshipDecision = evaluatePersonalityRelationshipDecision({
+    characterId: item.characterId,
+    playerText: playerFreeReply,
+    evaluation,
+    s,
+    maxAbsDelta: 1
+  });
+  const requestedRelationshipDelta = relationshipDecision.delta;
   const relationshipBefore = getCharacterRelationship(item.characterId, s).closeness ?? 0;
   const changes = applyRelationshipEffects([
     { characterId: item.characterId, dimension: "closeness", amount: requestedRelationshipDelta }
@@ -458,6 +465,7 @@ export function resolveActiveMessageFreeReply(instanceId, playerFreeReply, evalu
     choiceId: null,
     requestedRelationshipDelta,
     appliedRelationshipDelta: relationshipChange.appliedAmount,
+    relationshipDecision,
     capApplied: relationshipChange.capApplied,
     relationshipBefore: relationshipChange.before,
     relationshipAfter: relationshipChange.after,
@@ -1807,6 +1815,7 @@ export function advanceWeek(s = state) {
   checkLifeDirection(s);
 
   if (checkTermEnd(s)) {
+    checkS2W7W12BackgroundSettlement(s);
     const termReview = generateStageReview(s);
     s.termHistory.push(termReview);
     s.stageReviewHistory.push(termReview);
@@ -1826,6 +1835,7 @@ export function advanceWeek(s = state) {
       s.age += 1;
     }
     s.selectedTermGoalId = null;
+    applyS2StartClassmateNameKnowledge(s);
     captureTermStartSnapshot(s);
     const resetResult = applyWeeklyReset(s);
 
@@ -1856,6 +1866,116 @@ function applyWeeklyReset(s = state) {
     generateSixWeekStoryScene(s);
   }
   return { storyCheckDue };
+}
+
+// ============================================================
+// S2-W7–W12：班際 competition system-only result resolver + academic settlement。
+// 兩個都唔係 weekly event，唔佔玩家一週事件 slot，只喺 term_p1_s2 讀到 checkTermEnd()
+// （即係 S2-W12 完結）嗰刻運行一次，見 advanceWeek() 入面嘅呼叫。
+// ============================================================
+const COMPETITION_TYPE_VALIDATION = {
+  class_wall_poster: { core: ["創意", "社交", "體力"], skills: ["繪畫", "閱讀"] },
+  class_quiz: { core: ["學業", "理智值", "社交"], skills: ["閱讀"] },
+  class_recitation: { core: ["自信", "理智值", "社交"], skills: ["朗誦", "閱讀"] },
+  class_relay: { core: ["體力", "快樂", "自信"], skills: ["足球", "游泳"] },
+  class_service_order: { core: ["理智值", "社交", "家庭關係"], skills: ["班務服務"] }
+};
+
+const COMPETITION_RESULT_NARRATION = {
+  excellent: "老師看著名單，說你們小組表現很好，可能有獎，或者被特別點名稱讚。之前所有練習像被放到同一張桌上。",
+  good: "老師說你們做得不錯，雖然未必有名次，但有完成，也有看見合作。結果沒有像得獎那麼響，卻沒有空掉。",
+  mixed: "結果不算差，但老師提到中間有一點失誤。失誤被說出來後，反而沒那麼像一個黑洞；結果不是完美，但不是只剩錯的地方。",
+  weak: "結果不太理想。老師沒有罵，只說有些地方準備未夠，或者合作還可以再好。這次沒有帶來獎，卻仍然留下你們做過的東西，也留下下次可以再試的地方。",
+  conflict: "名次沒有比你們中間那段摩擦更讓人記得。同組同學還記得誰太急、誰太慢、誰沒被聽完。結果不是最漂亮的，但至少它沒有被完全吞掉，也會跟著你們走到 P2。"
+};
+
+function averageNormalizedStats(keys, s) {
+  const present = keys.filter(k => s.stats[k] !== undefined);
+  if (!present.length) return 0.5;
+  return present.reduce((sum, k) => sum + s.stats[k] / 100, 0) / present.length;
+}
+
+function averageNormalizedSkills(keys, s, softCap = 15) {
+  const present = keys.filter(k => s.skillExp[k] !== undefined);
+  if (!present.length) return 0.5;
+  return present.reduce((sum, k) => sum + Math.min(s.skillExp[k] || 0, softCap) / softCap, 0) / present.length;
+}
+
+function averageTeamRelationship(teamNpcIds, s) {
+  if (!teamNpcIds.length) return 0.5;
+  const values = teamNpcIds.map(id => getCharacterRelationship(id, s).closeness / 100);
+  return values.reduce((sum, v) => sum + v, 0) / values.length;
+}
+
+// competition 過程入面嘅摩擦（tension）memory tag 一律用 "_tension" 做後綴命名（見 authored 資料），
+// 用嚟判斷 resultLevel 應唔應該偏向 "conflict"（人際摩擦比名次本身更重要），唔淨係睇分數高低。
+function competitionTensionRatio(s) {
+  const memories = s.classCompetitionState.preparationMemories || [];
+  if (!memories.length) return 0;
+  const tensionCount = memories.filter(tag => tag.includes("tension")).length;
+  return tensionCount / memories.length;
+}
+
+export function resolveClassCompetitionResultIfPending(s = state) {
+  const comp = s.classCompetitionState;
+  if (!comp || !comp.resultPending || comp.resultResolved) return null;
+  const typeConfig = COMPETITION_TYPE_VALIDATION[comp.competitionType] || COMPETITION_TYPE_VALIDATION.class_service_order;
+
+  const coreScore = averageNormalizedStats(typeConfig.core, s);
+  const skillScore = averageNormalizedSkills(typeConfig.skills, s);
+  const relationshipScore = averageTeamRelationship(comp.teamNpcIds, s);
+  const choiceMemoryScore = Math.min((comp.preparationMemories || []).length / 8, 1);
+  const randomSmallNoise = (Math.random() - 0.5) * 0.1;
+  const score = coreScore * 0.4 + skillScore * 0.25 + relationshipScore * 0.25 + choiceMemoryScore * 0.1 + randomSmallNoise;
+  const tensionRatio = competitionTensionRatio(s);
+
+  let resultLevel;
+  if (tensionRatio >= 0.4 && score < 0.75) resultLevel = "conflict";
+  else if (score >= 0.75) resultLevel = "excellent";
+  else if (score >= 0.6) resultLevel = "good";
+  else if (score >= 0.45) resultLevel = "mixed";
+  else resultLevel = "weak";
+
+  comp.resultLevel = resultLevel;
+  comp.resultResolved = true;
+  comp.resultShownMode = "popup";
+
+  generateReviewLog({
+    type: "班際活動",
+    title: "班際活動結果",
+    body: COMPETITION_RESULT_NARRATION[resultLevel],
+    tags: ["班際competition", comp.competitionType || ""].filter(Boolean)
+  }, s);
+
+  return { resultLevel, narration: COMPETITION_RESULT_NARRATION[resultLevel] };
+}
+
+// noRetentionBranch：即使 academicLevel 好低，玩家仍然升 P2；代價係暑假 next stage 會進入補課／
+// 基礎跟進。呢個唔喺 UI 顯示「留班」，亦都唔做老師訓話 playable event。
+export function resolveAcademicSettlement(s = state) {
+  if (s.academicSettlement) return s.academicSettlement;
+  const academicScore = averageNormalizedStats(["學業", "理智值"], s);
+  const academicLevel = academicScore >= 0.55 ? "stable" : academicScore >= 0.35 ? "borderline" : "weak";
+  const isWeak = academicLevel === "weak";
+
+  s.academicSettlement = {
+    checkedAt: "S2-W12_END",
+    academicLevel,
+    promoteToP2: true,
+    summerSupportRequired: isWeak,
+    basicSkillsNotStable: isWeak,
+    summerHomeworkMayIncludeBasicPractice: isWeak,
+    parentSchoolTalkImplied: isWeak
+  };
+  return s.academicSettlement;
+}
+
+// S2-W12 結束時嘅背景結算入口：competition result fallback resolver（如果 W7/W10 都未 resolve）
+// 加 academic settlement，兩個都唔係 playable event，唔佔 weekly event slot。
+function checkS2W7W12BackgroundSettlement(s = state) {
+  if (s.currentTermId !== "term_p1_s2") return;
+  resolveClassCompetitionResultIfPending(s);
+  resolveAcademicSettlement(s);
 }
 
 export function captureTermStartSnapshot(s = state) {
@@ -1986,6 +2106,35 @@ function attitudesUsedRarely(counts) {
 // ============================================================
 // week 參數預設用 s.currentWeek，但可以指定「用邊一週嘅 event pool」——
 // 例如玩家喺 Week 1 撳「下一週」，想睇返 Week 1 自己嘅 event（唔係 advanceWeek() 已經 +1 之後嘅新週數）
+// S2-W7-25（competitionEntryCandidate）／S2-W10-35 fallback（competitionMandatoryFallback）
+// 一旦真係被抽中，就要落 classCompetitionState.started／startWeek／competitionType／teamNpcIds。
+// 呢個唔靠 choice（玩家未揀任何按鈕就已經知道「呢場比賽開始咗」），所以喺 draw 嗰刻做，唔喺
+// resolveOpeningEventChoice() 度做（避免玩家揀邊個 choice 都會影響有冇 started）。
+function applyCompetitionEntrySideEffects(event, variant, s) {
+  const isEntryEvent = event.metadata?.competitionEntryCandidate || event.metadata?.competitionMandatoryFallback;
+  if (!isEntryEvent || s.classCompetitionState.started) return;
+  const primaryNpcId = resolveOpeningEventNpcId(event, variant, s);
+  const secondaryNpcIds = resolveOpeningEventSecondaryParticipants(variant, s).map(p => p.id);
+  s.classCompetitionState.started = true;
+  s.classCompetitionState.startWeek = event.metadata?.competitionStartWeekLabel || `S2-W${event.week ?? ""}`;
+  s.classCompetitionState.competitionType = variant.competitionType || null;
+  s.classCompetitionState.teamNpcIds = [primaryNpcId, ...secondaryNpcIds].filter(Boolean);
+  s.classCompetitionState.resultPending = true;
+}
+
+function resolveOpeningEventSecondaryParticipants(variant, s = state) {
+  const seen = new Set();
+  return (variant?.secondaryNpcs || [])
+    .map(descriptor => {
+      const id = resolveSecondaryOpeningEventNpcId(descriptor, s);
+      if (!id || seen.has(id)) return null;
+      seen.add(id);
+      const displayName = getCharacterDisplayName(id, s) || getCharacterById(id, s)?.name || descriptor.npcNameFallback || null;
+      return { id, descriptor, displayName };
+    })
+    .filter(Boolean);
+}
+
 export function drawOpeningEventForWeek(s = state, week = s.currentWeek) {
   resetOpeningEventWeekState(s);
   const picked = pickOpeningEventForWeek(s, week);
@@ -1998,14 +2147,24 @@ export function drawOpeningEventForWeek(s = state, week = s.currentWeek) {
     return null;
   }
 
+  applyCompetitionEntrySideEffects(event, variant, s);
   s.pendingOpeningEvent = { eventId: event.id, variantId: variant.variantId, week };
   const npcId = resolveOpeningEventNpcId(event, variant, s);
+  const secondaryParticipants = resolveOpeningEventSecondaryParticipants(variant, s);
+  const secondaryNpcIds = secondaryParticipants.map(p => p.id);
+  const secondarySpeakerDisplayName = secondaryParticipants.map(p => p.displayName).filter(Boolean).join("、") || null;
+  const speakerDisplayName = resolveOpeningEventHeaderDisplayName(event, variant, s, npcId);
+  const eventDisplay = buildOpeningEventDisplayModel(event, variant, s, npcId, secondaryParticipants);
 
   return {
     eventId: event.id,
     variantId: variant.variantId,
     senderId: npcId || undefined,
-    speakerDisplayName: resolveOpeningEventHeaderDisplayName(event, variant, s, npcId),
+    speakerDisplayName,
+    secondarySenderId: secondaryNpcIds[0] || undefined,
+    secondarySpeakerDisplayName,
+    participantSenderIds: [npcId, ...secondaryNpcIds].filter(Boolean),
+    eventDisplay,
     title: interpolateOpeningEventText(event.title, s),
     lines: getOpeningDialogueLines(event, variant, s, npcId),
     choices: variant.playerChoices.map(c => ({
@@ -2013,6 +2172,144 @@ export function drawOpeningEventForWeek(s = state, week = s.currentWeek) {
       id: c.id,
       playerLine: c.playerLine || null,
       playerLineType: c.playerLineType || "speech"
+    }))
+  };
+}
+
+function getOpeningEventSubtitleTags(event, variant, participants = []) {
+  const tags = [];
+  if (event?.week) tags.push(`S2-W${event.week}`);
+  if (event?.category === "family") tags.push("家庭");
+  if (event?.category === "academic") tags.push("學校");
+  if (event?.category === "social") tags.push("同學");
+  if (variant?.competitionType) tags.push("班際活動");
+  if (variant?.usesSelectedNeighbor || variant?.identityTypeId === "same_age_neighbor") tags.push("校外鄰居");
+  if (participants.length > 1) tags.push("多人");
+  return [...new Set(tags)].slice(0, 4);
+}
+
+function clampTextAtSentence(text, maxLength = 96) {
+  const cleaned = String(text || "").replace(/\s+/g, " ").trim();
+  if (cleaned.length <= maxLength) return cleaned;
+  const chunks = cleaned.match(/[^。！？!?]+[。！？!?]?/g) || [cleaned];
+  let out = "";
+  for (const chunk of chunks) {
+    if ((out + chunk).length > maxLength && out) break;
+    out += chunk;
+    if (out.length >= 58) break;
+  }
+  if (!out) out = cleaned.slice(0, maxLength);
+  return out.length > maxLength ? `${out.slice(0, maxLength - 1)}…` : out;
+}
+
+function buildScenePreview(sceneOpening, s = state) {
+  const fullText = interpolateOpeningEventText(sceneOpening || "", s);
+  return {
+    shortText: clampTextAtSentence(fullText, 100),
+    fullText,
+    collapsedByDefault: true
+  };
+}
+
+function splitLongTextIntoNarrationBlocks(text, maxLength = 150) {
+  const cleaned = String(text || "").trim();
+  if (!cleaned) return [];
+  const sentences = cleaned.match(/[^。！？!?]+[。！？!?]?/g) || [cleaned];
+  const blocks = [];
+  let current = "";
+  sentences.forEach(sentence => {
+    if ((current + sentence).length > maxLength && current) {
+      blocks.push({ type: "narration", text: current.trim() });
+      current = sentence;
+    } else {
+      current += sentence;
+    }
+  });
+  if (current.trim()) blocks.push({ type: "narration", text: current.trim() });
+  return blocks;
+}
+
+function splitDialogueTextBySpeakers(text, participants, fallbackSpeakerName = "") {
+  const names = participants.map(p => p.displayName).filter(Boolean);
+  const uniqueNames = [...new Set(names)].filter(name => name && name !== "旁白");
+  const source = String(text || "").trim();
+  if (!source) return [];
+  const escapedNames = uniqueNames.map(name => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  if (!escapedNames.length) {
+    return fallbackSpeakerName && fallbackSpeakerName !== "旁白"
+      ? [{ type: "speaker", speakerName: fallbackSpeakerName, text: source }]
+      : splitLongTextIntoNarrationBlocks(source);
+  }
+
+  const regex = new RegExp(`(${escapedNames.join("|")})(?:(?!：「).){0,56}：「([^」]+)」`, "g");
+  const blocks = [];
+  let lastIndex = 0;
+  let match;
+  while ((match = regex.exec(source)) !== null) {
+    const before = source.slice(lastIndex, match.index).trim();
+    if (before) blocks.push(...splitLongTextIntoNarrationBlocks(before));
+    blocks.push({ type: "speaker", speakerName: match[1], text: match[2].trim() });
+    lastIndex = regex.lastIndex;
+  }
+  const tail = source.slice(lastIndex).trim();
+  if (tail) blocks.push(...splitLongTextIntoNarrationBlocks(tail));
+  return blocks.length ? blocks : splitLongTextIntoNarrationBlocks(source);
+}
+
+function normalizeDisplayBlocks(blocks = [], s = state) {
+  return blocks
+    .map(block => ({
+      ...block,
+      text: interpolateOpeningEventText(block.text || "", s)
+    }))
+    .filter(block => block.text);
+}
+
+function buildOpeningEventDisplayModel(event, variant, s, npcId, secondaryParticipants = []) {
+  const primaryName = resolveOpeningEventHeaderDisplayName(event, variant, s, npcId) || "旁白";
+  const primaryParticipant = npcId ? {
+    id: npcId,
+    displayName: primaryName
+  } : null;
+  const participants = [
+    primaryParticipant,
+    ...secondaryParticipants.map(p => ({ id: p.id, displayName: p.displayName }))
+  ].filter(Boolean);
+  const displayMode = variant?.variantType === "family" || event?.category === "family"
+    ? "family"
+    : participants.length >= 3
+      ? "group"
+      : participants.length === 2
+        ? "duo"
+        : participants.length === 1
+          ? "singleNpc"
+          : "narrator";
+
+  const manualBlocks = normalizeDisplayBlocks(variant.displayBlocks || [], s);
+  const autoBlocks = [];
+  if (!manualBlocks.length) {
+    (variant.openingDialogue || []).forEach(line => {
+      const text = interpolateOpeningEventText(line.text || "", s);
+      if (line.speaker && line.speaker !== "旁白" && !text.includes("：「")) {
+        autoBlocks.push({ type: "speaker", speakerName: line.speaker, text });
+      } else {
+        autoBlocks.push(...splitDialogueTextBySpeakers(text, participants, line.speaker));
+      }
+    });
+  }
+
+  return {
+    header: {
+      displayMode,
+      participants,
+      title: interpolateOpeningEventText(event.title || "", s),
+      subtitleTags: getOpeningEventSubtitleTags(event, variant, participants)
+    },
+    scenePreview: buildScenePreview(event.sceneIntro || "", s),
+    dialogueBlocks: manualBlocks.length ? manualBlocks : autoBlocks,
+    choices: (variant.playerChoices || []).map(c => ({
+      id: c.id,
+      text: c.buttonText || c.text
     }))
   };
 }
@@ -2045,6 +2342,10 @@ function interpolateOpeningEventText(text, s = state) {
 // 比對——authored pool 嗰個欄位淨係得個描述性代號（例如 "senior_student_friendly"），同真正嘅
 // character slot id 對唔上，會令呢個 continuity 分支永遠行唔到
 function resolveOpeningEventHeaderDisplayName(event, variant, s = state, npcId = null) {
+  // npcIdHint「family_parent」係刻意嘅 generic placeholder（媽媽／爸爸可以喺同一個 variant 用唔同
+  // 功能出現，唔應該鎖定去邊一個），header 唔跟 resolveOpeningEventNpcId 隨機揀到嘅具體家長個名，
+  // 一律顯示「家人」。relationshipDelta／memory 仍然用返 npcId 底層套用，呢度淨係改 header 文字。
+  if (variant?.npcIdHint === "family_parent") return "家人";
   if (npcId) {
     return getCharacterDisplayName(npcId, s) || getCharacterById(npcId, s)?.name || null;
   }
@@ -2130,6 +2431,9 @@ export function getPendingOpeningEventContext(s = state) {
   if (!event || !variant) return null;
   const npcId = resolveOpeningEventNpcId(event, variant, s);
   const npc = npcId ? getCharacterById(npcId, s) : null;
+  const secondaryParticipants = resolveOpeningEventSecondaryParticipants(variant, s);
+  const secondaryNpcIds = secondaryParticipants.map(p => p.id);
+  const secondarySpeakerDisplayName = secondaryParticipants.map(p => p.displayName).filter(Boolean).join("、") || null;
   return {
     pending,
     event,
@@ -2137,6 +2441,9 @@ export function getPendingOpeningEventContext(s = state) {
     npcId,
     npc,
     npcDisplayName: resolveOpeningEventHeaderDisplayName(event, variant, s, npcId) || "對方",
+    secondaryNpcIds,
+    secondarySpeakerDisplayName,
+    participantNpcIds: [npcId, ...secondaryNpcIds].filter(Boolean),
     lines: getOpeningDialogueLines(event, variant, s, npcId),
     choices: variant.playerChoices || []
   };
@@ -2145,6 +2452,227 @@ export function getPendingOpeningEventContext(s = state) {
 export function clampEventFreeInputAmount(amount) {
   const n = Math.round(Number(amount) || 0);
   return Math.max(-2, Math.min(2, n));
+}
+
+const PERSONALITY_RELATIONSHIP_INTENTS = [
+  "support_npc", "practical_solution", "playful_join", "teasing_friendly", "teasing_mean",
+  "ask_question", "set_boundary", "avoid_or_silent", "challenge_npc", "dismiss_npc",
+  "compare_or_compete", "share_personal_memory", "seek_adult_help",
+  "join_activity", "joke_playfully", "slow_down"
+];
+
+const PERSONALITY_RELATIONSHIP_TONES = [
+  "gentle", "playful", "excited", "curious", "blunt", "sarcastic",
+  "dismissive", "anxious", "competitive", "quiet"
+];
+
+const PERSONALITY_RELATIONSHIP_PROFILES = {
+  char_classmate: {
+    label: "ka_long",
+    playful: true,
+    likes: ["playful_join", "teasing_friendly", "practical_solution"],
+    dislikes: ["dismiss_npc"],
+    coreInterestPatterns: [/玩|試|秘密|隊長|演習|一齊|一起|諗|想/],
+    boundaryPatterns: [/煩|嘈|收聲|唔好再搵|不要再找/]
+  },
+  char_best_friend: {
+    label: "wing_sum",
+    sensitive: true,
+    likes: ["support_npc", "ask_question", "set_boundary", "practical_solution"],
+    dislikes: ["teasing_mean", "dismiss_npc"],
+    coreInterestPatterns: [/慢慢|小心|可以唔碰|唔碰|記得|細|紙|貼紙|收藏|你想唔想/],
+    boundaryPatterns: [/怪|冇用|無用|垃圾|掉|掉咗|掉左|逼|快啲講/]
+  },
+  char_classmate_competitive: {
+    label: "tsz_hin",
+    sensitive: true,
+    likes: ["practical_solution", "challenge_npc", "ask_question", "support_npc"],
+    dislikes: ["dismiss_npc", "teasing_mean"],
+    coreInterestPatterns: [/規則|先睇|先看|一步|慢慢|分開|點做|方法|一頁|唔一定要贏|不用一定贏/],
+    boundaryPatterns: [/煩|淨係識比|只會比|諗太多|想贏好煩|分數怪|輸硬/]
+  },
+  char_classmate_mischief: {
+    label: "pak_yu",
+    playful: true,
+    likes: ["playful_join", "teasing_friendly", "ask_question", "share_personal_memory"],
+    dislikes: ["dismiss_npc", "teasing_mean"],
+    coreInterestPatterns: [/怪|怪獸|腳印|調查|報告|秘密|線索|奇怪|點解|為什麼/],
+    boundaryPatterns: [/嘔心|噁心|蠢|白痴|無聊|冇聊|唔好講|收聲/]
+  },
+  neighbor_lokyin: {
+    label: "lokyin",
+    playful: true,
+    likes: ["playful_join", "teasing_friendly", "practical_solution"],
+    dislikes: ["dismiss_npc"],
+    coreInterestPatterns: [/一齊|一起|輪到|任務|挑戰|玩|等我/],
+    boundaryPatterns: [/煩|唔玩|不要再叫|成日叫/]
+  },
+  neighbor_wingching: {
+    label: "wingching",
+    sensitive: true,
+    likes: ["ask_question", "support_npc", "set_boundary"],
+    dislikes: ["dismiss_npc", "teasing_mean"],
+    coreInterestPatterns: [/小心|唔碰|不碰|記得|細|收藏|可以睇|慢慢/],
+    boundaryPatterns: [/爛|破|冇用|無用|掉|唔值錢/]
+  },
+  neighbor_holong: {
+    label: "holong",
+    playful: true,
+    likes: ["teasing_friendly", "playful_join", "ask_question"],
+    dislikes: ["dismiss_npc", "teasing_mean"],
+    coreInterestPatterns: [/貼紙|閃|玩具|出場|借我睇|可以睇|普通都鍾意|普通都喜歡/],
+    boundaryPatterns: [/冇咩特別|沒什麼特別|垃圾|逼你借|一定要借|唔值錢/]
+  },
+  neighbor_manhei: {
+    label: "manhei",
+    sensitive: true,
+    likes: ["practical_solution", "support_npc", "set_boundary"],
+    dislikes: ["dismiss_npc", "teasing_mean"],
+    coreInterestPatterns: [/等你|慢慢|問清楚|規則|可以等|唔急|不急/],
+    boundaryPatterns: [/快啲啦|快點啦|麻煩|煩|照做啦|使乜問/]
+  }
+};
+
+function getPersonalityRelationshipProfile(character) {
+  if (!character) return null;
+  if (PERSONALITY_RELATIONSHIP_PROFILES[character.id]) return PERSONALITY_RELATIONSHIP_PROFILES[character.id];
+  const personality = character.personalityId || "";
+  if (personality === "pers_outgoing_inviter") return PERSONALITY_RELATIONSHIP_PROFILES.char_classmate;
+  if (personality === "pers_quiet_observer") return PERSONALITY_RELATIONSHIP_PROFILES.char_best_friend;
+  if (personality === "pers_competitive_peer") return PERSONALITY_RELATIONSHIP_PROFILES.char_classmate_competitive;
+  if (personality === "pers_mischief_maker") return PERSONALITY_RELATIONSHIP_PROFILES.char_classmate_mischief;
+  return null;
+}
+
+function normalizePersonalityRelationshipIntent(intent) {
+  const normalized = intent === "joke_playfully"
+    ? "teasing_friendly"
+    : intent === "join_activity"
+      ? "playful_join"
+      : intent === "slow_down"
+        ? "practical_solution"
+        : intent;
+  return PERSONALITY_RELATIONSHIP_INTENTS.includes(normalized) ? normalized : "avoid_or_silent";
+}
+
+function normalizePersonalityRelationshipTone(tone) {
+  return PERSONALITY_RELATIONSHIP_TONES.includes(tone) ? tone : "quiet";
+}
+
+function detectGenericFlattery(text) {
+  const cleaned = String(text || "").replace(/[，。！？!?\s]/g, "");
+  return [
+    /^你好叻(呀|啊)?$/,
+    /^你講得啱$/,
+    /^你講咩都啱$/,
+    /^我永遠支持你$/,
+    /^你好好人$/,
+    /^我最鍾意你$/,
+    /^你最好$/,
+    /^你好勁(呀|啊)?$/
+  ].some(pattern => pattern.test(cleaned));
+}
+
+function detectHostileBoundaryBreak(text) {
+  return /嘔心|噁心|白痴|蠢|垃圾|收聲|唔好再搵我|不要再找我|真係好煩|真的很煩|淨係識|只會/.test(text);
+}
+
+function inferPersonalityRelationshipIntentTone(playerText, relationshipDecision = {}) {
+  const text = String(playerText || "");
+  let intent = normalizePersonalityRelationshipIntent(relationshipDecision.intent);
+  let tone = normalizePersonalityRelationshipTone(relationshipDecision.tone);
+
+  if (intent === "avoid_or_silent") {
+    if (/哈哈|又嚟|又来|係咪|秘密|怪獸|出場|隊長|副隊長|報告|調查/.test(text)) intent = "teasing_friendly";
+    else if (/煩|嘔心|噁心|白痴|蠢|垃圾|冇用|無用|收聲/.test(text)) intent = "dismiss_npc";
+    else if (/點解|點做|可唔可以|可以點|問|咩|嗎|呀/.test(text)) intent = "ask_question";
+    else if (/先|規則|方法|慢慢|一步|不如|唔好|不要|等/.test(text)) intent = "practical_solution";
+    else if (/我唔想|我不想|唔好|不要|可以唔/.test(text)) intent = "set_boundary";
+  }
+
+  if (tone === "quiet") {
+    if (/哈哈|又嚟|又来|怪獸|秘密|隊長|副隊長|出場/.test(text)) tone = "playful";
+    else if (/點解|咩|嗎|可唔可以/.test(text)) tone = "curious";
+    else if (/煩|蠢|垃圾|收聲|嘔心|噁心/.test(text)) tone = "dismissive";
+    else if (/先|不如|方法|規則|慢慢/.test(text)) tone = "gentle";
+  }
+
+  return { intent, tone };
+}
+
+function evaluatePersonalityRelationshipTeasing({ profile, tone, intent, text, currentRelationship }) {
+  const isTeasing = intent === "teasing_friendly" || tone === "playful";
+  if (!isTeasing) return null;
+  if (detectHostileBoundaryBreak(text) || (profile?.boundaryPatterns || []).some(pattern => pattern.test(text))) {
+    return { delta: -1, reasonCode: "teasing_hit_insecurity", teasingType: "teasing_mean" };
+  }
+  if (profile?.playful) {
+    return { delta: currentRelationship >= 20 ? 1 : 0, reasonCode: "friendly_teasing_accepted", teasingType: "teasing_friendly" };
+  }
+  if (profile?.sensitive) {
+    return { delta: currentRelationship >= 45 && /一齊|一起|我哋|我們/.test(text) ? 0 : -1, reasonCode: "teasing_hit_insecurity", teasingType: "teasing_friendly" };
+  }
+  return { delta: 0, reasonCode: "friendly_teasing_neutral", teasingType: "teasing_friendly" };
+}
+
+export function evaluatePersonalityRelationshipDecision({ characterId, playerText, evaluation = {}, s = state, maxAbsDelta = 2 }) {
+  const character = getCharacterById(characterId, s);
+  const profile = getPersonalityRelationshipProfile(character);
+  const currentRelationship = getCharacterRelationship(characterId, s).closeness ?? 0;
+  const rawDecision = evaluation.relationshipDecision || {};
+  const { intent, tone } = inferPersonalityRelationshipIntentTone(playerText, rawDecision);
+  const text = String(playerText || "");
+  const genericFlatteryDetected = detectGenericFlattery(text);
+  const boundaryRisk = detectHostileBoundaryBreak(text) || (profile?.boundaryPatterns || []).some(pattern => pattern.test(text));
+  const matchedNpcPreference = (profile?.coreInterestPatterns || []).some(pattern => pattern.test(text));
+  const teasing = evaluatePersonalityRelationshipTeasing({ profile, tone, intent, text, currentRelationship });
+
+  let delta = 0;
+  let reasonCode = "neutral_no_deep_connection";
+  let personalityAlignment = matchedNpcPreference ? "matched" : "neutral";
+  let teasingType = teasing?.teasingType || null;
+
+  if (genericFlatteryDetected) {
+    delta = 0;
+    reasonCode = "generic_flattery_no_context";
+    personalityAlignment = "generic_flattery";
+  } else if (boundaryRisk || intent === "dismiss_npc" || intent === "teasing_mean") {
+    delta = detectHostileBoundaryBreak(text) ? -2 : -1;
+    reasonCode = boundaryRisk ? "dismissed_core_interest" : "ignored_current_need";
+    personalityAlignment = "mismatched";
+    teasingType = intent === "teasing_mean" ? "teasing_mean" : teasingType;
+  } else if (teasing) {
+    delta = teasing.delta;
+    reasonCode = teasing.reasonCode;
+    personalityAlignment = delta > 0 ? "matched" : delta < 0 ? "mismatched" : "contextual";
+  } else if (matchedNpcPreference && (profile?.likes || []).includes(intent)) {
+    delta = 2;
+    reasonCode = intent === "practical_solution" ? "practical_support" : "joined_playful_world";
+    personalityAlignment = "strong_match";
+  } else if (matchedNpcPreference || (profile?.likes || []).includes(intent)) {
+    delta = 1;
+    reasonCode = intent === "set_boundary" ? "respected_boundary" : intent === "challenge_npc" ? "challenged_but_constructive" : "practical_support";
+    personalityAlignment = "matched";
+  } else if (intent === "challenge_npc") {
+    delta = profile?.sensitive ? 0 : 1;
+    reasonCode = "challenged_but_constructive";
+    personalityAlignment = "contextual";
+  }
+
+  delta = Math.max(-maxAbsDelta, Math.min(maxAbsDelta, delta));
+
+  return {
+    npcId: characterId,
+    delta,
+    reasonCode,
+    intent,
+    tone,
+    personalityAlignment,
+    boundaryRisk: !!boundaryRisk,
+    genericFlatteryDetected,
+    teasingType,
+    matchedNpcPreference: matchedNpcPreference ? profile?.label || characterId : null
+  };
 }
 
 // 開放式聊天（chatbot）用嘅版本：sanitize LLM 回傳嘅 { reply, statusDelta, skillExpDelta, relationshipDelta }，
@@ -2169,11 +2697,8 @@ export function sanitizeChatDeltaEvaluation(evaluation, s = state) {
     if (clamped) skillExpDelta[skill] = clamped;
   });
 
-  // closeness 唔畀 LLM 自己揀 amount：淨係由 playerToneTowardNpc（positive／neutral／negative）呢個
-  // 分類欄位決定，正面／中性（包括玩笑、頑皮但唔算真係惡意）一律 +1，只有清楚、表面睇得出嘅負面
-  // 說話先 -1。呢個判斷同 statusDelta（玩家自己嘅心理感受）完全分開，唔可以互相假設。
-  // 只有清楚寫明 "negative" 先當負面；LLM 冇跟足 schema（大小寫唔同、漏咗呢個 key）一律當
-  // neutral 處理（fallback 做 +1），唔可以因為 LLM 冇答呢個字段就完全冇任何 closeness 變化。
+  // 角色頁主動傾偈係玩家 chill talk：closeness 保留舊規則，只用 LLM 嘅 positive／neutral／negative
+  // tone 分類做細幅保底變化；人格對齊評分只用喺 event free answer / active message。
   const tone = typeof evaluation.playerToneTowardNpc === "string"
     ? evaluation.playerToneTowardNpc.trim().toLowerCase()
     : "";
@@ -2207,6 +2732,33 @@ export function applyChatDeltaEvaluation(characterId, sanitized, s = state) {
   return { statusDelta: appliedStatusDelta, skillExpDelta: sanitized.skillExpDelta || {}, relationshipRecords };
 }
 
+// freeAnswerResolver：玩家用 API 自由回答時，必須壓回「現有 choice intent」之一，唔可以即興
+// 生成一條完全冇 metadata 嘅新路線。resolvedIntent／confidence 由 evaluateOpeningEventReplyWithApi()
+// 嘅 LLM 回傳，呢度淨係做 sanitize（限制喺合法清單／數值範圍），實際 tier 邏輯喺
+// applyFreeAnswerConfidenceTier() 處理。
+const FREE_ANSWER_INTENTS = [
+  "support_npc", "ask_question", "join_activity", "slow_down", "set_boundary",
+  "avoid_or_silent", "joke_playfully", "practical_solution", "compare_or_compete",
+  "dismiss_npc", "seek_adult_help", "share_personal_memory"
+];
+
+const FREE_ANSWER_INTENT_DEFAULT_EFFECTS = {
+  support_npc: { core: { 社交: 1 } },
+  ask_question: { core: { 社交: 1 } },
+  join_activity: { core: { 社交: 1, 快樂: 1 } },
+  slow_down: { core: { 理智值: 1 } },
+  set_boundary: { core: { 自信: 1 } },
+  avoid_or_silent: {},
+  joke_playfully: { core: { 快樂: 1 } },
+  practical_solution: { core: { 社交: 1 } },
+  compare_or_compete: { core: { 自信: 1 } },
+  dismiss_npc: { core: { 社交: -1 } },
+  seek_adult_help: { core: { 理智值: 1 } },
+  share_personal_memory: { core: { 家庭關係: 1 } }
+};
+
+const isEngineDevMode = typeof location !== "undefined" && (location.hostname === "localhost" || location.hostname === "127.0.0.1" || location.protocol === "file:");
+
 function sanitizeEventFreeInputEvaluation(evaluation, s = state) {
   if (!evaluation || typeof evaluation !== "object") return null;
   const resultDialogue = evaluation.resultDialogue || {};
@@ -2235,6 +2787,9 @@ function sanitizeEventFreeInputEvaluation(evaluation, s = state) {
     if (amount) relationshipDelta.push({ dimension, amount });
   });
 
+  const resolvedIntent = FREE_ANSWER_INTENTS.includes(evaluation.resolvedIntent) ? evaluation.resolvedIntent : "avoid_or_silent";
+  const confidence = Number.isFinite(evaluation.confidence) ? Math.max(0, Math.min(1, evaluation.confidence)) : 0.4;
+
   return {
     resultDialogue: { speaker: resultDialogue.speaker || null, text: String(resultDialogueText).slice(0, 240) },
     resultText: String(evaluation.resultText).slice(0, 220),
@@ -2242,8 +2797,66 @@ function sanitizeEventFreeInputEvaluation(evaluation, s = state) {
     statusDelta,
     skillExpDelta,
     relationshipDelta,
+    resolvedIntent,
+    confidence,
+    relationshipDecision: evaluation.relationshipDecision && typeof evaluation.relationshipDecision === "object"
+      ? { ...evaluation.relationshipDecision }
+      : null,
     reasonForDev: evaluation.reasonForDev ? String(evaluation.reasonForDev).slice(0, 240) : ""
   };
+}
+
+// confidence tier（見 info/s2_w7_w12_dialogue_draft_v0_2.md 第六部分）：
+// >=0.75 用返 matched anchorChoice 本身嘅 authored effects（唔用 API 自己估嘅數值）；
+// 0.45–0.75 用 resolvedIntent 嘅 default effect，標 softMapped；
+// <0.45 neutral fallback，效果幾乎為零，唔再喺 UI 追問，安全咁繼續事件。
+function applyFreeAnswerConfidenceTier(sanitized, anchorChoice, hasNpc) {
+  const confidence = sanitized.confidence;
+  if (confidence >= 0.75 && anchorChoice) {
+    sanitized.statusDelta = { ...(anchorChoice.statusDelta || {}) };
+    sanitized.skillExpDelta = { ...(anchorChoice.skillExpDelta || {}) };
+    sanitized.relationshipDelta = hasNpc
+      ? (anchorChoice.relationshipDelta || []).map(r => ({ ...r }))
+      : [];
+    sanitized.softMapped = false;
+  } else if (confidence >= 0.45) {
+    const defaults = FREE_ANSWER_INTENT_DEFAULT_EFFECTS[sanitized.resolvedIntent] || {};
+    sanitized.statusDelta = { ...(defaults.core || {}) };
+    sanitized.skillExpDelta = { ...(defaults.skills || {}) };
+    sanitized.relationshipDelta = [];
+    sanitized.softMapped = true;
+  } else {
+    sanitized.statusDelta = {};
+    sanitized.skillExpDelta = {};
+    sanitized.relationshipDelta = [];
+    sanitized.softMapped = true;
+  }
+}
+
+function applyEventFreeAnswerPersonalityRelationship(sanitized, npcId, playerFreeReply, s = state) {
+  if (!sanitized || !npcId) return;
+  if (sanitized.confidence < 0.45) return;
+  const decision = evaluatePersonalityRelationshipDecision({
+    characterId: npcId,
+    playerText: playerFreeReply,
+    evaluation: {
+      resolvedIntent: sanitized.resolvedIntent,
+      relationshipDecision: {
+        ...(sanitized.relationshipDecision || {}),
+        intent: sanitized.relationshipDecision?.intent || sanitized.resolvedIntent
+      }
+    },
+    s,
+    maxAbsDelta: 2
+  });
+  sanitized.relationshipDecision = {
+    ...decision,
+    source: "event_free_answer_personality_alignment"
+  };
+  sanitized.relationshipScoringApplied = true;
+  sanitized.relationshipDelta = decision.delta
+    ? [{ targetScope: "currentSpeaker", dimension: "closeness", amount: decision.delta }]
+    : [];
 }
 
 function resolveFreeInputReviewAnchorChoice(variant, sanitizedEvaluation) {
@@ -2282,7 +2895,7 @@ function ensureOpeningFreeInputDeltas(sanitizedEvaluation, anchorChoice, hasNpc,
     }
   }
 
-  if (hasNpc && !(sanitizedEvaluation.relationshipDelta || []).length) {
+  if (hasNpc && !(sanitizedEvaluation.relationshipDelta || []).length && !sanitizedEvaluation.relationshipScoringApplied) {
     const fallbackRelationship = (anchorChoice?.relationshipDelta || [])
       .find(delta => delta?.targetScope === "currentSpeaker" && RELATIONSHIP_DIMENSIONS.includes(delta.dimension) && delta.amount);
     if (fallbackRelationship) {
@@ -2318,15 +2931,55 @@ function formatEventFreeInputOutcomeSummary({ statusDelta, skillExpDelta, relati
     lines.push(detailed ? `${skill}經驗 ${amount >= 0 ? "+" : ""}${amount}` : `${skill}經驗${amount >= 0 ? "增加咗少少" : "減少咗少少"}`);
   });
   (relationshipRecords || []).forEach(record => {
+    const displayName = record.displayName || npcDisplayName;
     if (record.capApplied && record.appliedAmount === 0 && record.requestedAmount > 0) {
-      lines.push(`${npcDisplayName}親近度已經到達目前階段上限。`);
+      lines.push(`${displayName}親近度已經到達目前階段上限。`);
     } else if (detailed) {
-      lines.push(`${npcDisplayName}${record.dimension} ${record.appliedAmount >= 0 ? "+" : ""}${record.appliedAmount}`);
-    } else {
-      lines.push(`${npcDisplayName}對你嘅感覺有咗變化`);
+      lines.push(`${displayName}${record.dimension} ${record.appliedAmount >= 0 ? "+" : ""}${record.appliedAmount}`);
+    } else if (record.appliedAmount !== 0) {
+      lines.push(`${displayName}對你嘅感覺有咗變化`);
     }
   });
   return lines;
+}
+
+function resolveOpeningEventRelationshipTarget(delta, npcId, variant, s = state) {
+  const targetScope = delta.targetScope || "currentSpeaker";
+  if (targetScope === "currentSpeaker") {
+    return npcId ? { characterId: npcId } : null;
+  }
+  if (targetScope === "secondaryNpc") {
+    const descriptor = (variant?.secondaryNpcs || []).find(d => d.personalityId === delta.personalityId);
+    const secondaryId = descriptor ? resolveSecondaryOpeningEventNpcId(descriptor, s) : null;
+    return secondaryId ? { characterId: secondaryId, descriptor } : null;
+  }
+  return null;
+}
+
+function applyOpeningEventRelationshipDelta(delta, npcId, variant, s = state) {
+  if (!delta || !delta.amount) return null;
+  const target = resolveOpeningEventRelationshipTarget(delta, npcId, variant, s);
+  if (!target?.characterId) return null;
+  const record = applyRelationshipEffects([{
+    characterId: target.characterId,
+    dimension: delta.dimension,
+    amount: delta.amount
+  }], s)[0];
+  if (!record) return null;
+  const character = getCharacterById(target.characterId, s);
+  return {
+    ...record,
+    displayName: getCharacterDisplayName(target.characterId, s) || character?.name || target.descriptor?.npcNameFallback || "對方"
+  };
+}
+
+function applyOpeningEventRelationshipDeltas(deltas, npcId, variant, s = state) {
+  const records = [];
+  (deltas || []).forEach(delta => {
+    const record = applyOpeningEventRelationshipDelta(delta, npcId, variant, s);
+    if (record) records.push(record);
+  });
+  return records;
 }
 
 // choiceIndex 對應 drawOpeningEventForWeek() 建構個 popup 入面 choices 陣列嘅位置
@@ -2361,20 +3014,45 @@ export function resolveOpeningEventChoice(choiceIndex, s = state) {
   if (hasExplicitUnlocks) applyOpeningEventChoiceUnlocks(choice, s);
   completePrimarySameAgeNeighborMeet(event, s);
   const npcDisplayName = npcId ? (getCharacterDisplayName(npcId, s) || getCharacterById(npcId, s)?.name || "對方") : (variant.npcNameFallback || "對方");
+  // softCheck validation（見 info/s2_w7_w12_dialogue_draft_v0_2.md 第三部分）：唔會鎖住 choice、
+  // 唔會顯示數值或「未達標」字眼，淨係按玩家現有 core property 門檻揀返生活化嘅 pass／weak 文字，
+  // 兩個版本都要喺 authored data 寫齊（passResultText／weakResultText），呢度唔生成新文字。
+  let softCheckTag = null;
+  let softCheckResultText = null;
+  if (choice.validate?.softCheck) {
+    const passed = Object.entries(choice.validate.stats || {}).every(([stat, threshold]) => (s.stats[stat] ?? 0) >= threshold);
+    softCheckTag = passed ? choice.validate.passMemoryTag : choice.validate.weakMemoryTag;
+    softCheckResultText = passed ? choice.validate.passResultText : choice.validate.weakResultText;
+  }
   const resolvedResultDialogue = choice.resultDialogue
     ? {
         ...choice.resultDialogue,
-        text: interpolateOpeningEventText(choice.resultDialogue.text, s)
+        text: interpolateOpeningEventText(softCheckResultText || choice.resultDialogue.text, s)
       }
     : null;
+  // secondaryNpc：三人事件（player + 2 same-class NPC）用嘅第二個 NPC，靠 variant.secondaryNpcs[]
+  // 嘅 identityTypeId/personalityId 配對（同 primary 一樣，唔靠 npcIdHint 做真正 key）。
+  const variantSecondaryNpcIds = resolveOpeningEventSecondaryParticipants(variant, s).map(p => p.id);
+  const changedSecondaryNpcIds = [];
   (choice.relationshipDelta || []).forEach(r => {
-    if (r.targetScope !== "currentSpeaker") {
-      console.warn(`[opening event] choice ${choice.id} 用咗未支援嘅 relationshipDelta.targetScope「${r.targetScope}」，跳過`);
+    if (!r.amount) return;
+    if (r.targetScope === "currentSpeaker") {
+      if (!npcId) { console.warn(`[opening event] choice ${choice.id} 冇對應到已生成角色，relationshipDelta 冇套用`); return; }
+      applyRelationshipEffects([{ characterId: npcId, dimension: r.dimension, amount: r.amount }], s);
+      outcomeSummary.push(detailed ? `${npcDisplayName}${r.dimension} ${r.amount >= 0 ? "+" : ""}${r.amount}` : `${npcDisplayName}對你嘅感覺有咗變化`);
       return;
     }
-    if (!npcId) { console.warn(`[opening event] choice ${choice.id} 冇對應到已生成角色，relationshipDelta 冇套用`); return; }
-    applyRelationshipEffects([{ characterId: npcId, dimension: r.dimension, amount: r.amount }], s);
-    outcomeSummary.push(detailed ? `${npcDisplayName}${r.dimension} ${r.amount >= 0 ? "+" : ""}${r.amount}` : `${npcDisplayName}對你嘅感覺有咗變化`);
+    if (r.targetScope === "secondaryNpc") {
+      const descriptor = (variant.secondaryNpcs || []).find(d => d.personalityId === r.personalityId);
+      const secondaryId = descriptor ? resolveSecondaryOpeningEventNpcId(descriptor, s) : null;
+      if (!secondaryId) { console.warn(`[opening event] choice ${choice.id} 嘅 secondaryNpc「${r.personalityId}」冇對應到已生成角色，relationshipDelta 冇套用`); return; }
+      changedSecondaryNpcIds.push(secondaryId);
+      applyRelationshipEffects([{ characterId: secondaryId, dimension: r.dimension, amount: r.amount }], s);
+      const secondaryDisplayName = getCharacterDisplayName(secondaryId, s) || getCharacterById(secondaryId, s)?.name || "對方";
+      outcomeSummary.push(detailed ? `${secondaryDisplayName}${r.dimension} ${r.amount >= 0 ? "+" : ""}${r.amount}` : `${secondaryDisplayName}對你嘅感覺有咗變化`);
+      return;
+    }
+    console.warn(`[opening event] choice ${choice.id} 用咗未支援嘅 relationshipDelta.targetScope「${r.targetScope}」，跳過`);
   });
 
   if (npcId && resolvedResultDialogue && resolvedResultDialogue.text) {
@@ -2382,7 +3060,9 @@ export function resolveOpeningEventChoice(choiceIndex, s = state) {
   }
   (choice.memoryAdd || []).forEach(tag => {
     if (!s.memories.includes(tag)) s.memories.push(tag);
+    if (s.classCompetitionState?.resultPending) s.classCompetitionState.preparationMemories.push(tag);
   });
+  if (softCheckTag && !s.memories.includes(softCheckTag)) s.memories.push(softCheckTag);
 
   recordStoryEvent({
     eventId: pending.eventId,
@@ -2390,7 +3070,7 @@ export function resolveOpeningEventChoice(choiceIndex, s = state) {
     week: pending.week ?? s.currentWeek,
     totalWeek: s.totalWeeksElapsed ?? 0,
     location: s.locationId,
-    charactersInvolved: npcId ? [npcId] : [],
+    charactersInvolved: [...new Set([npcId, ...variantSecondaryNpcIds, ...changedSecondaryNpcIds].filter(Boolean))],
     playerChoiceText: choice.text,
     playerAttitudeTag: choice.attitudeId || null,
     resultSummary: outcomeSummary.join("；"),
@@ -2424,7 +3104,22 @@ export function resolveOpeningEventFreeReply(playerFreeReply, evaluation, s = st
   const reviewAnchorChoice = resolveFreeInputReviewAnchorChoice(variant, sanitized);
   completePrimarySameAgeNeighborMeet(event, s);
   const resolvedNpcDisplayName = npcId ? (getCharacterDisplayName(npcId, s) || npcDisplayName) : npcDisplayName;
-  ensureOpeningFreeInputDeltas(sanitized, reviewAnchorChoice, !!npcId, s);
+  applyFreeAnswerConfidenceTier(sanitized, reviewAnchorChoice, !!npcId);
+  applyEventFreeAnswerPersonalityRelationship(sanitized, npcId, playerFreeReply, s);
+  if (sanitized.confidence >= 0.45) ensureOpeningFreeInputDeltas(sanitized, reviewAnchorChoice, !!npcId, s);
+  if (isEngineDevMode) {
+    console.debug("[FreeAnswerResolver]", {
+      eventId: pending.eventId,
+      variantId: pending.variantId,
+      playerText: playerFreeReply,
+      resolvedChoiceId: reviewAnchorChoice?.id || null,
+      resolvedIntent: sanitized.resolvedIntent,
+      confidence: sanitized.confidence,
+      relationshipDecision: sanitized.relationshipDecision,
+      appliedEffects: { statusDelta: sanitized.statusDelta, skillExpDelta: sanitized.skillExpDelta, relationshipDelta: sanitized.relationshipDelta },
+      fallbackReason: sanitized.softMapped ? (sanitized.confidence >= 0.45 ? "softMapped_intent_default" : "low_confidence_neutral") : "high_confidence_choice_match"
+    });
+  }
 
   Object.entries(sanitized.statusDelta).forEach(([stat, amount]) => {
     applyResourceChangeWithCap(stat, amount, s);
@@ -2433,12 +3128,10 @@ export function resolveOpeningEventFreeReply(playerFreeReply, evaluation, s = st
     s.skillExp[skill] = Math.max(0, (s.skillExp[skill] || 0) + amount);
   });
   const relationshipRecords = npcId
-    ? applyRelationshipEffects(sanitized.relationshipDelta.map(delta => ({
-        characterId: npcId,
-        dimension: delta.dimension,
-        amount: delta.amount
-      })), s)
+    ? applyOpeningEventRelationshipDeltas(sanitized.relationshipDelta, npcId, variant, s)
     : [];
+  const relationshipNpcIds = relationshipRecords.map(record => record.characterId).filter(Boolean);
+  const variantSecondaryNpcIds = context.secondaryNpcIds || [];
 
   if (npcId && sanitized.resultDialogue.text) {
     addCharacterMemory(npcId, sanitized.resultDialogue.text, s);
@@ -2460,7 +3153,7 @@ export function resolveOpeningEventFreeReply(playerFreeReply, evaluation, s = st
     week: pending.week ?? s.currentWeek,
     totalWeek: s.totalWeeksElapsed ?? 0,
     location: s.locationId,
-    charactersInvolved: npcId ? [npcId] : [],
+    charactersInvolved: [...new Set([npcId, ...variantSecondaryNpcIds, ...relationshipNpcIds].filter(Boolean))],
     playerChoiceText: safeFreeInputChoiceText(playerFreeReply),
     playerAttitudeTag: "api_free_input",
     resultSummary: outcomeSummary.join("；"),
@@ -2472,7 +3165,7 @@ export function resolveOpeningEventFreeReply(playerFreeReply, evaluation, s = st
     followUpEventIds: [],
     storyThreadId: pending.eventId,
     variantId: pending.variantId,
-    choiceId: reviewAnchorChoice?.id || "api_free_input",
+    choiceId: reviewAnchorChoice?.id || `api_free_input:${sanitized.resolvedIntent}`,
     storyMemoryTags: reviewAnchorChoice?.memoryAdd || [],
     freeInputReview: buildFreeInputReviewAdjustment(playerFreeReply, sanitized, reviewAnchorChoice, outcomeSummary.slice(1))
   }, s);

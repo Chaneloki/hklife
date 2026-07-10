@@ -23,7 +23,14 @@ import { termGoals } from "../data/goals.js";
 import { getMessageById } from "../data/messages.js";
 import { hobbies } from "../data/hobbies.js";
 import { getCompetitionById } from "../data/opportunities.js";
-import { generateCharacters, getCharacterById, getCharacterDisplayName, normalizeFixedNamedCharacters } from "../data/characters.js";
+import {
+  applyS2StartClassmateNameKnowledge,
+  generateCharacters,
+  getCharacterById,
+  getCharacterDisplayName,
+  normalizeFixedNamedCharacters,
+  sameClassCorePeers
+} from "../data/characters.js";
 import {
   sendChatbotMessage, testApiKeyConnection,
   getSelectedProvider, setSelectedProvider, getApiKey, setApiKey, clearApiKey,
@@ -51,6 +58,13 @@ const RETIRED_PERSONALITY_MIGRATIONS = {
     personalityTags: ["外向邀請型"],
     defaultTone: "外向邀請型"
   }
+};
+
+const DEV_WEEK_SHORTCUTS = {
+  p1_s1_w1_6: { label: "P1-S1 W1-6", termId: "term_p1_s1", year: 1, stageId: "stage_p1", week: 1, totalWeeksElapsed: 0 },
+  p1_s1_w7_12: { label: "P1-S1 W7-12", termId: "term_p1_s1", year: 1, stageId: "stage_p1", week: 7, totalWeeksElapsed: 6 },
+  p1_s2_w1_6: { label: "P1-S2 W1-6", termId: "term_p1_s2", year: 1, stageId: "stage_p1", week: 1, totalWeeksElapsed: 12 },
+  p1_s2_w7_12: { label: "P1-S2 W7-12", termId: "term_p1_s2", year: 1, stageId: "stage_p1", week: 7, totalWeeksElapsed: 18 }
 };
 
 let selection = {
@@ -122,6 +136,7 @@ function applyLoadedState(loaded) {
     }
   });
   normalizeFixedNamedCharacters(state);
+  applyS2StartClassmateNameKnowledge(state);
   return needsGoalReselect;
 }
 
@@ -1001,6 +1016,72 @@ function bindContentEditor() {
   });
 }
 
+function ensureGeneratedCharactersForDevJump() {
+  if (!state.generatedCharacters || !Object.keys(state.generatedCharacters).length) {
+    generateCharacters(state);
+  }
+  normalizeFixedNamedCharacters(state);
+}
+
+function resetTransientWeekStateForDevJump() {
+  state.ap = state.maxAp;
+  state.pendingOpeningEvent = null;
+  state.openingExclusiveGroupUsedThisWeek = {};
+  state.messageBudgetThisWeek = 0;
+  state.urgentMessagesSentThisTerm = state.urgentMessagesSentThisTerm || 0;
+  state.recentActionHistory = (state.recentActionHistory || []).filter(entry =>
+    entry.termId !== state.currentTermId || entry.week !== state.currentWeek
+  );
+}
+
+function resetS1ClassmateNameKnowledgeForDevJump() {
+  const startKnownCorePeerIds = new Set(["char_classmate"]);
+  const corePeerIds = Object.values(sameClassCorePeers).map(peer => peer.id);
+  state.knownCharacters = (state.knownCharacters || []).filter(id => !corePeerIds.includes(id) || startKnownCorePeerIds.has(id));
+  corePeerIds.forEach(id => {
+    const character = getCharacterById(id, state);
+    if (!character) return;
+    const startKnown = startKnownCorePeerIds.has(id);
+    character.nameKnown = startKnown;
+    character.knownStatus = startKnown ? "known" : "unknown";
+    character.relationshipVisible = startKnown;
+    if (!startKnown) {
+      delete character.displayName;
+      delete character.knownAs;
+    }
+  });
+}
+
+function applyDevWeekShortcut(shortcutId) {
+  const shortcut = DEV_WEEK_SHORTCUTS[shortcutId];
+  if (!shortcut) return;
+  ensureGeneratedCharactersForDevJump();
+  state.currentTermId = shortcut.termId;
+  state.currentYear = shortcut.year;
+  state.stageId = shortcut.stageId;
+  state.currentWeek = shortcut.week;
+  state.totalWeeksElapsed = shortcut.totalWeeksElapsed;
+  state.selectedTermGoalId = null;
+  resetTransientWeekStateForDevJump();
+  if (shortcut.termId === "term_p1_s2") {
+    applyS2StartClassmateNameKnowledge(state);
+  } else {
+    resetS1ClassmateNameKnowledgeForDevJump();
+  }
+  captureTermStartSnapshot(state);
+  state.logs.push(`[DEV] Jumped to ${shortcut.label}`);
+  renderGame();
+  autosave();
+  alert(`已跳到 ${shortcut.label}`);
+}
+
+function bindDevTools() {
+  document.querySelectorAll(".dev-jump-btn").forEach(btn => {
+    btn.addEventListener("click", () => applyDevWeekShortcut(btn.dataset.devJump));
+  });
+  bindContentEditor();
+}
+
 // Dev / author-only tool gate：內容編輯器唔係玩家功能，預設一定要 off。
 // devMode===true 先會顯示個入口，可以用 localStorage.debugDevMode==="true" 或者 URL ?dev=1 開。
 function isDevMode() {
@@ -1026,10 +1107,7 @@ function init() {
   bindChatbotModal();
   bindGoalSelectScreen();
   bindSettingsScreen();
-  if (isDevMode()) {
-    document.getElementById("dev-tools-section").classList.remove("hidden");
-    bindContentEditor();
-  }
+  bindDevTools();
   validateContentData();
 }
 

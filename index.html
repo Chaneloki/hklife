@@ -112,9 +112,16 @@
           <button id="btn-restart" class="btn btn-danger btn-full">🔄 重新開始</button>
         </div>
 
-        <!-- Dev / author-only tool：預設隱藏，devMode true 先會顯示（localStorage.debugDevMode==="true" 或 ?dev=1） -->
-        <div id="dev-tools-section" class="settings-list hidden">
+        <!-- Dev / author-only tool：測試 shortcut 常駐顯示，方便直接跳週驗證 authored content。 -->
+        <div id="dev-tools-section" class="settings-list">
           <h3 class="panel-title">🛠️ Dev Tools</h3>
+          <div class="settings-toggle-row" style="align-items:flex-start; gap:8px; flex-direction:column;">
+            <span>快速跳到測試段落</span>
+            <button class="btn btn-secondary btn-full dev-jump-btn" data-dev-jump="p1_s1_w1_6">P1-S1 W1-6</button>
+            <button class="btn btn-secondary btn-full dev-jump-btn" data-dev-jump="p1_s1_w7_12">P1-S1 W7-12</button>
+            <button class="btn btn-secondary btn-full dev-jump-btn" data-dev-jump="p1_s2_w1_6">P1-S2 W1-6</button>
+            <button class="btn btn-secondary btn-full dev-jump-btn" data-dev-jump="p1_s2_w7_12">P1-S2 W7-12</button>
+          </div>
           <button id="btn-open-content-editor" class="btn btn-secondary btn-full">🛠️ 內容編輯器</button>
         </div>
       </div>
@@ -214,6 +221,7 @@
       <div class="dialogue-box">
         <div class="dialogue-speaker">
           <img id="dialogue-avatar" class="character-avatar" alt="" />
+          <img id="dialogue-avatar-secondary" class="character-avatar character-avatar-secondary hidden" alt="" />
           <span id="dialogue-name" class="speaker-name"></span>
         </div>
         <div id="dialogue-lines" class="dialogue-lines"></div>

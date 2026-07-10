@@ -76,6 +76,10 @@ function checkStructuredCondition(condition, s) {
   switch (condition.type) {
     case "currentTerm":
       return s.currentTermId === condition.termId;
+    case "classCompetitionStarted":
+      return !!s.classCompetitionState?.started === !!condition.value;
+    case "classCompetitionResultPending":
+      return !!s.classCompetitionState?.resultPending === !!condition.value;
     default:
       devWarn(`structured condition "${condition.type}" 暫時未支援，當通過`);
       return true;
@@ -134,16 +138,42 @@ function ensurePrimarySameAgeNeighbor(s) {
   return chosen;
 }
 
+// S2-W10-35：如果 classCompetitionState 喺 S2-W7 冇 started，S2-W10 一定要揀到呢條班際 competition 入口
+// （conditionalMandatory，metadata.competitionMandatoryFallback === true）；已經 started 就唔強制。
 function pickRequiredEventIfNeeded(pool, s, week) {
-  if (s.currentTermId !== "term_p1_s2" || week !== 1) return null;
-  if (s.primarySameAgeNeighborId) return null;
-  return pool.find(e => e.metadata?.selectedNeighborSourceEvent && e.eventScheduling?.requiredFirstNeighborEvent) || null;
+  if (s.currentTermId === "term_p1_s2" && week === 1 && !s.primarySameAgeNeighborId) {
+    const neighborSource = pool.find(e => e.metadata?.selectedNeighborSourceEvent && e.eventScheduling?.requiredFirstNeighborEvent);
+    if (neighborSource) return neighborSource;
+  }
+  if (s.currentTermId === "term_p1_s2" && week === 10 && !s.classCompetitionState?.started) {
+    const competitionFallback = pool.find(e => e.metadata?.competitionMandatoryFallback);
+    if (competitionFallback) return competitionFallback;
+  }
+  return null;
+}
+
+const TRAVEL_PLACE_POOL = ["island_day_trip", "theme_park_day_trip", "sz_macau_short_trip", "hotel_staycation"];
+
+// S2-W8-28：一局只抽一個 Easter family trip 地點，用返同 ensurePrimarySameAgeNeighbor() 一樣嘅
+// seed-based 決定性做法（同一個 save 每次揀返同一個地點，唔會刷新後變第二個）。
+function ensureSelectedTravelPlace(s) {
+  if (s.easterTripState?.selectedTravelPlace && TRAVEL_PLACE_POOL.includes(s.easterTripState.selectedTravelPlace)) {
+    return s.easterTripState.selectedTravelPlace;
+  }
+  const seed = `${s.saveSeed ?? 0}_${s.currentTermId ?? ""}_easterTrip`;
+  let hash = 0;
+  for (let i = 0; i < seed.length; i++) hash = (hash * 31 + seed.charCodeAt(i)) | 0;
+  const chosen = TRAVEL_PLACE_POOL[Math.abs(hash) % TRAVEL_PLACE_POOL.length];
+  if (!s.easterTripState) s.easterTripState = { selectedTravelPlace: null, tripMemoryTags: [] };
+  s.easterTripState.selectedTravelPlace = chosen;
+  return chosen;
 }
 
 // variant 揀法：優先揀返同玩家已生成角色（generatedCharacters）身份／性格相符嘅 variant，
 // 令 NPC 個性同已存在嘅角色一致；揾唔到就隨機揀一個 variant（authored 內容本身冇規定必揀邊個），
 // 並喺 dev mode 出 warning 提示冇personality match（唔係錯誤，只係話冇對應到已生成角色）。
-function findMatchingCharacter(v, s) {
+// export：resolveSecondaryOpeningEventNpcId() 都要用呢個做「三人事件」第二個 NPC 嘅角色配對。
+export function findMatchingCharacter(v, s) {
   if (v.npcIdHint && s.generatedCharacters?.[v.npcIdHint]) return s.generatedCharacters[v.npcIdHint];
   const wantedType = normalizeIdentityTypeId(v.identityTypeId);
   const generated = Object.values(s.generatedCharacters || {});
@@ -154,13 +184,28 @@ function findMatchingCharacter(v, s) {
 }
 
 function pickVariant(event, s) {
-  const variants = event.variants || [];
+  let variants = event.variants || [];
   if (!variants.length) return null;
+  // eligibleTravelPlace：S2-W8-31 呢類「玩家記住嘅小畫面」variant 一定要跟返 S2-W8-28 已經
+  // 揀定嘅 selectedTravelPlace，唔可以跨地點亂抽（見 metadata.eligibleWhen 對應嘅 authored 草稿）
+  const hasTravelPlaceVariants = variants.some(v => v.eligibleTravelPlace);
+  if (hasTravelPlaceVariants) {
+    const selected = s.easterTripState?.selectedTravelPlace;
+    const filtered = variants.filter(v => !v.eligibleTravelPlace || v.eligibleTravelPlace === selected);
+    if (filtered.length) variants = filtered;
+    else devWarn(`事件 ${event.id} 嘅 variants 全部都用咗 eligibleTravelPlace，但揾唔到同 selectedTravelPlace「${selected}」相符嘅`);
+  }
   if (event.metadata?.variantSelectionMode === "selectedNeighborOnly") {
     const selectedId = ensurePrimarySameAgeNeighbor(s);
     const selectedVariant = variants.find(v => v.neighborId === selectedId || v.npcIdHint === selectedId);
     if (selectedVariant) return selectedVariant;
     devWarn(`事件 ${event.id} 指定 selectedNeighborOnly，但搵唔到 ${selectedId} variant`);
+  }
+  if (event.metadata?.variantSelectionMode === "selectedTravelPlaceOnly") {
+    const selectedPlace = ensureSelectedTravelPlace(s);
+    const selectedVariant = variants.find(v => v.travelPlace === selectedPlace);
+    if (selectedVariant) return selectedVariant;
+    devWarn(`事件 ${event.id} 指定 selectedTravelPlaceOnly，但搵唔到 ${selectedPlace} variant`);
   }
   const knownHintVariant = variants.find(v => v.npcIdHint && (s.knownCharacters || []).includes(v.npcIdHint));
   if (knownHintVariant) return knownHintVariant;
@@ -168,6 +213,20 @@ function pickVariant(event, s) {
   if (matched) return matched;
   devWarn(`事件 ${event.id} 揾唔到同已生成角色相符嘅 variant，隨機揀一個`);
   return variants[Math.floor(Math.random() * variants.length)];
+}
+
+// 三人事件（player + 2 same-class NPC）用嘅第二個 NPC 角色配對，同 resolveOpeningEventNpcId() 一樣
+// 靠 identityTypeId + personalityId 揾已生成角色，唔靠 npcIdHint 做真正 key（純粹係 hint）。
+export function resolveSecondaryOpeningEventNpcId(secondaryDescriptor, s) {
+  if (!secondaryDescriptor) return null;
+  const matched = findMatchingCharacter(secondaryDescriptor, s);
+  if (matched) return matched.id;
+  const wantedType = normalizeIdentityTypeId(secondaryDescriptor.identityTypeId);
+  const generated = Object.values(s.generatedCharacters || {});
+  const sameType = generated.find(c => c.generatedFromIdentityType === wantedType);
+  if (sameType) return sameType.id;
+  devWarn(`secondary NPC（${secondaryDescriptor.personalityId}）揾唔到任何同身份類型嘅已生成角色`);
+  return null;
 }
 
 // 揾返呢個 event/variant 應該用邊個已生成角色（characterSlots id）做 speaker/senderId，

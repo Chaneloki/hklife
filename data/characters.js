@@ -30,6 +30,15 @@ export const relationshipTargets = {
   same_age_neighbor: ["neighbor_lokyin", "neighbor_wingching", "neighbor_holong", "neighbor_manhei"]
 };
 
+export const sameClassCorePeers = {
+  ka_long: { id: "char_classmate", displayName: "家朗", nameKnown: true },
+  wing_sum: { id: "char_best_friend", displayName: "穎心", nameKnown: true },
+  tsz_hin: { id: "char_classmate_competitive", displayName: "梓軒", nameKnown: true },
+  pak_yu: { id: "char_classmate_mischief", displayName: "柏宇", nameKnown: true }
+};
+
+export const sameClassCorePeerIds = Object.values(sameClassCorePeers).map(peer => peer.id);
+
 const TEACHER_SURNAMES = ["陳", "黃", "林", "李", "張", "馬", "周", "何", "鄭", "梁"];
 const PEER_NAME_POOL = ["家朗", "子晴", "浩然", "曉彤", "卓軒", "芷晴", "嘉穎", "俊熙", "海怡", "梓聰", "詠然", "希哲"];
 const ADULT_GIVEN_POOL = ["國強", "美英", "志明", "淑芬", "偉強", "慧珊"];
@@ -40,8 +49,16 @@ export const characterSlots = [
   { id: "char_dad", identityTypeId: "family_elder", roleLabel: "爸爸", fixedName: "爸爸", gender: "man", startKnown: true },
   { id: "char_sibling", identityTypeId: "family_peer", roleLabel: "屋企同輩", namePrefix: "", nameSuffix: "", startKnown: false },
   { id: "char_teacher", identityTypeId: "teacher", roleLabel: "班主任", nameSuffix: "老師", startKnown: true },
-  { id: "char_classmate", identityTypeId: "same_age_peer", roleLabel: "隔離位同學", startKnown: true },
-  { id: "char_best_friend", identityTypeId: "same_age_peer", roleLabel: "同班同學", startKnown: false },
+  // 4 個 forced slot 對應 sameClassCorePeers 嘅 4 個固定 personality（家朗/穎心/梓軒/柏宇）。
+  // 之前得 char_classmate／char_best_friend 兩個冇 forcedPersonalityId 嘅 slot，隨機喺 4 個
+  // personality 度揀 2 個，令另外 2 個成個 playthrough 都唔存在；S2-W7–W12 嘅 competition
+  // event 需要一次過用齊 4 個，先揭發呢個一直都喺嘅 bug（見 findMatchingCharacter 嘅 fallback
+  // 會亂咁揀一個「同 identityType 但唔啱 personality」嘅角色頂替）。而家跟返 same_age_neighbor／
+  // senior_student 嘅做法：每個 personality 都有專屬 forced slot，保證全部 4 個都會生成。
+  { id: "char_classmate", identityTypeId: "same_age_peer", roleLabel: "隔離位同學", forcedPersonalityId: "pers_outgoing_inviter", startKnown: true },
+  { id: "char_best_friend", identityTypeId: "same_age_peer", roleLabel: "同班同學", forcedPersonalityId: "pers_quiet_observer", startKnown: false },
+  { id: "char_classmate_competitive", identityTypeId: "same_age_peer", roleLabel: "同班同學", forcedPersonalityId: "pers_competitive_peer", startKnown: false },
+  { id: "char_classmate_mischief", identityTypeId: "same_age_peer", roleLabel: "同班同學", forcedPersonalityId: "pers_mischief_maker", startKnown: false },
   { id: "char_tutor", identityTypeId: "tutor", roleLabel: "補習導師", nameSuffix: "Miss/Sir", startKnown: false },
   {
     id: "neighbor_lokyin",
@@ -258,6 +275,8 @@ export function generateCharacters(s = state) {
       conflictTriggers: identity.commonConflictTypes,
       lifeDirectionInfluence: IDENTITY_LIFE_DIRECTION_INFLUENCE[slot.identityTypeId] || [],
       unlockConditions: [],
+      nameKnown: slot.startKnown ? true : false,
+      relationshipVisible: slot.startKnown ? true : false,
       knownStatus: slot.startKnown ? "known" : "unknown",
       sourceEventId: null
     };
@@ -289,6 +308,41 @@ export function normalizeFixedNamedCharacters(s = state) {
   return s.generatedCharacters;
 }
 
+export function isS2StartOrLater(s = state) {
+  if (!s) return false;
+  if (s.currentTermId === "term_p1_s2") return true;
+  return (s.currentYear || 1) > 1;
+}
+
+export function isSameClassCorePeerId(id) {
+  return sameClassCorePeerIds.includes(id);
+}
+
+export function applyS2StartClassmateNameKnowledge(s = state) {
+  if (!isS2StartOrLater(s)) return [];
+  if (!Array.isArray(s.knownCharacters)) s.knownCharacters = [];
+  if (!s.relationships || typeof s.relationships !== "object") s.relationships = {};
+  const changed = [];
+  sameClassCorePeerIds.forEach(id => {
+    const character = getCharacterById(id, s);
+    if (!character) return;
+    const displayName = character.displayNameKnown || character.name || character.baseName;
+    character.nameKnown = true;
+    character.displayName = displayName;
+    character.knownAs = displayName;
+    character.knownStatus = "known";
+    character.relationshipVisible = true;
+    if (!s.knownCharacters.includes(id)) {
+      s.knownCharacters.push(id);
+      changed.push(id);
+    }
+    if (!s.relationships[id]) {
+      s.relationships[id] = { closeness: 20, trust: 20, respect: 20, dependency: 10, misunderstanding: 0 };
+    }
+  });
+  return changed;
+}
+
 // 玩家未識得個名之前，一律顯示呢個角色位嘅 roleLabel（例如「隔離位同學」「帶隊職員」），
 // 唔顯示「神秘人」「同學」「老師」「家人」「職員」呢類 generic label；
 // 一旦 s.knownCharacters 有呢個 id（即 engine.meetCharacter() 已經觸發過），先顯示返真名。
@@ -296,7 +350,8 @@ export function normalizeFixedNamedCharacters(s = state) {
 export function getCharacterDisplayName(id, s = state) {
   const character = getCharacterById(id, s);
   if (!character) return null;
-  const known = (s.knownCharacters || []).includes(id);
+  const s2ClassmateKnown = isS2StartOrLater(s) && isSameClassCorePeerId(id);
+  const known = s2ClassmateKnown || character.nameKnown === true || (s.knownCharacters || []).includes(id);
   const stageId = s.stageId || "";
   const isPrimary = ["stage_p1", "stage_p2", "stage_p3", "stage_p4", "stage_p5", "stage_p6"].includes(stageId);
   if (known && isPrimary && character.generatedFromIdentityType === "senior_student" && character.primaryAddressLabel) {

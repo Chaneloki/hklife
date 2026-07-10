@@ -15,18 +15,27 @@ import {
   sameAgeNeighborPool,
   selectedNeighborRule
 } from "./authored/openingEventPool_s2_w1_w6_v0_5.js";
+import {
+  hkLifeSimulatorOpeningEventDialogueS2W7W12,
+  competitionTypePool,
+  s2W12CompetitionResultResolverMetadata
+} from "./authored/openingEventPool_s2_w7_w12_v0_1.js";
 import { applySeniorStudentContinuity } from "./seniorStudentContinuity.js";
 
 const openingEvents = applySeniorStudentContinuity([
   ...authoredOpeningEvents,
   ...hkLifeSimulatorOpeningEventDialogueW7W12,
-  ...hkLifeSimulatorOpeningEventDialogueS2W1W6
+  ...hkLifeSimulatorOpeningEventDialogueS2W1W6,
+  ...hkLifeSimulatorOpeningEventDialogueS2W7W12
 ]);
 
 export {
   openingEvents,
   hkLifeSimulatorOpeningEventDialogueW7W12,
   hkLifeSimulatorOpeningEventDialogueS2W1W6,
+  hkLifeSimulatorOpeningEventDialogueS2W7W12,
+  competitionTypePool,
+  s2W12CompetitionResultResolverMetadata,
   sameAgeNeighborPool,
   selectedNeighborRule,
   hkLifeMainStatusKeys,

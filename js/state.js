@@ -226,6 +226,29 @@ export function createInitialState() {
     primarySameAgeNeighborMet: false,
     primarySameAgeNeighborNameKnown: false,
 
+    // ---------- S2-W7–W12 班際 competition（data/authored/openingEventPool_s2_w7_w12_v0_1.js） ----------
+    classCompetitionState: {
+      started: false,
+      startWeek: null,           // "S2-W7" | "S2-W10"
+      competitionType: null,     // class_wall_poster | class_quiz | class_recitation | class_relay | class_service_order
+      teamNpcIds: [],            // 已生成角色 id，通常 2 個 same-class NPC
+      playerJoinedRole: null,
+      preparationMemories: [],   // memoryAdd tag[]，練習／分工／摩擦階段累積
+      resultPending: false,
+      resultResolved: false,
+      resultLevel: null,         // excellent | good | mixed | weak | conflict
+      resultShownMode: null      // "popup" | "teacher_line" | "review_story" | "npc_followup"
+    },
+
+    // ---------- S2-W8 Easter family trip（一局只抽一個地點） ----------
+    easterTripState: {
+      selectedTravelPlace: null, // island_day_trip | theme_park_day_trip | sz_macau_short_trip | hotel_staycation
+      tripMemoryTags: []
+    },
+
+    // ---------- S2-W12 background settlement（唔係 playable event，喺 checkS2W7W12BackgroundSettlement() 寫入） ----------
+    academicSettlement: null,    // { checkedAt, academicLevel, promoteToP2, summerSupportRequired, basicSkillsNotStable, parentSchoolTalkImplied }
+
     // ---------- Skill property 系統 ----------
     // { skillName: number }，具體能力經驗值，同「學業、社交、創意、自信」等核心 property 分開。
     // 現階段唯一合法入口係 hobby class 週處理（js/engine.js applyHobbyWeeklyEffects 讀 hobby.skillExpDelta）。

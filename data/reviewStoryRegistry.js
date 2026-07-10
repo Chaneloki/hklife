@@ -13,7 +13,7 @@
 // 冇喺 bridge 入面嘅 choiceId（例如之後 W2–W6 有咗自己嘅 review story 檔），先落返用
 // eventId+variantId（寬鬆正規化）+ storyMemoryTags 交集嘅舊邏輯做 fallback。
 
-import { reviewStoryGroups } from "./reviewStories.js";
+import { S2_W7_DEFAULT_REVIEW_STORY, reviewStoryGroups } from "./reviewStories.js";
 import { getOpeningEventById, getOpeningEventVariant } from "./openingEvents.js";
 import { getCharacterById, getCharacterDisplayName } from "./characters.js";
 import { openingWeek1ReviewBridge } from "./openingWeek1ReviewBridge.js";
@@ -53,6 +53,71 @@ function variantIdsMatch(a, b) {
   return shorter.length >= 6 && longer.startsWith(shorter.slice(0, -1));
 }
 
+function eventIdsMatch(group, eventId) {
+  if (!group || !eventId) return false;
+  return group.eventId === eventId
+    || group.sourceEventId === eventId
+    || (group.matchEventIds || []).includes(eventId);
+}
+
+function groupVariantIds(group) {
+  return [
+    group.variantId,
+    group.sourceVariantId,
+    group.eventVariantId,
+    ...(group.matchVariantIds || [])
+  ].filter(Boolean);
+}
+
+function groupMatchesEntryVariant(group, variantId) {
+  if (!variantId) return false;
+  return groupVariantIds(group).some(id => id === variantId || variantIdsMatch(id, variantId));
+}
+
+function branchIdsForMatch(branch) {
+  return [
+    branch.id,
+    branch.branchId,
+    branch.choiceId,
+    ...(branch.matchBranchIds || [])
+  ].filter(Boolean);
+}
+
+function getEntryBranchKey(entry) {
+  if (!entry) return "";
+  if (entry.branchId) return entry.branchId;
+  if (entry.choiceId) return entry.choiceId;
+  return "";
+}
+
+function findS2W7BranchByKey(entry, groups) {
+  if (!entry?.eventId?.startsWith("s2_w7_")) return null;
+  const eventGroups = groups.filter(group => eventIdsMatch(group, entry.eventId));
+  const variantGroups = eventGroups.filter(group => groupMatchesEntryVariant(group, entry.variantId));
+  const branchKey = getEntryBranchKey(entry);
+
+  if (branchKey) {
+    for (const group of variantGroups) {
+      const branch = (group.branches || []).find(b => branchIdsForMatch(b).includes(branchKey));
+      if (branch) return { group, branch, fallbackLevel: "exact" };
+    }
+  }
+
+  if (variantGroups.length) {
+    const group = variantGroups[0];
+    const branch = (group.branches || []).find(b => b.branchId === group.defaultBranchId) || group.branches?.[0] || null;
+    if (branch) return { group, branch, fallbackLevel: "variant" };
+  }
+
+  if (eventGroups.length) {
+    const group = eventGroups[0];
+    const branch = (group.branches || []).find(b => b.branchId === group.defaultBranchId) || group.branches?.[0] || null;
+    if (branch) return { group, branch, fallbackLevel: "event" };
+  }
+
+  return { authoredFallbackScene: S2_W7_DEFAULT_REVIEW_STORY, fallbackLevel: "week" };
+}
+
 // 舊邏輯：eventId+variantId（寬鬆正規化）+ storyMemoryTags 交集，做 bridge 搵唔到時嘅 fallback
 function findBranchByTagIntersection(entry, groups) {
   const candidateGroups = groups.filter(g => g.eventId === entry.eventId && variantIdsMatch(g.variantId, entry.variantId));
@@ -67,6 +132,9 @@ function findBranchByTagIntersection(entry, groups) {
 // 喺一條 eventHistory 紀錄（storyEventLog entry）入面揾返 matched branch：
 // 優先用明確 choiceId -> branch bridge（S1-W1 / S2-W1），搵唔到先 fallback 落舊邏輯
 function findBranchForLogEntry(entry, groups) {
+  const s2W7Match = findS2W7BranchByKey(entry, groups);
+  if (s2W7Match) return s2W7Match;
+
   const bridged = entry.choiceId ? openingReviewBridge[entry.choiceId] : null;
   if (bridged) {
     const group = getReviewGroupById(bridged.reviewGroupId);
@@ -75,6 +143,17 @@ function findBranchForLogEntry(entry, groups) {
     devWarn(`bridge 表引用嘅 ${bridged.reviewGroupId}/${bridged.branchId} 喺 reviewStoryGroups 度搵唔到，跌返落 tag 比對`);
   }
   return findBranchByTagIntersection(entry, groups);
+}
+
+function devLogS2W7Match(entry, match) {
+  if (!isDev || !entry?.eventId?.startsWith("s2_w7_")) return;
+  console.log("[ReviewStories:S2-W7] match", {
+    eventId: entry.eventId,
+    variantId: entry.variantId || null,
+    branchId: getEntryBranchKey(entry) || null,
+    matchedStoryId: match?.branch?.id || match?.authoredFallbackScene?.id || null,
+    fallbackLevel: match?.fallbackLevel || "none"
+  });
 }
 
 function resolveNpcName(group, entry, s) {
@@ -94,6 +173,25 @@ const GENERIC_PRONOUNS = {
   familyName: "家人",
   seniorName: "師兄／師姐"
 };
+
+const REVIEW_PARTICIPANT_TO_CHARACTER_ID = {
+  ka_long: "char_classmate",
+  wing_sum: "char_best_friend",
+  tsz_hin: "char_classmate_competitive",
+  pak_yu: "char_classmate_mischief"
+};
+
+function resolveReviewCharacterNames(group, entry, s, fallbackNpcName = null) {
+  const participantNames = (group?.participants || [])
+    .map(id => REVIEW_PARTICIPANT_TO_CHARACTER_ID[id] || id)
+    .map(id => {
+      const character = getCharacterById(id, s);
+      return character ? (getCharacterDisplayName(character.id, s) || character.name) : null;
+    })
+    .filter(Boolean);
+  if (participantNames.length) return [...new Set(participantNames)];
+  return fallbackNpcName ? [fallbackNpcName] : [];
+}
 
 function interpolate(text, s, npcName) {
   if (!text) return text;
@@ -161,21 +259,43 @@ function buildAuthoredEventFreeInputScene(entry, s) {
   };
 }
 
+function buildSafeReviewFallback(entry = null) {
+  const event = entry?.eventId ? getOpeningEventById(entry.eventId) : null;
+  return {
+    id: entry?.eventId ? `safe_review_fallback_${entry.eventId}` : "safe_review_fallback_general",
+    title: event?.title || "這六週裡的一個小片段",
+    sceneHeading: entry?.week ? `第 ${entry.week} 週` : "",
+    charactersInvolved: [],
+    narration: [
+      "這件小事的完整回顧文字暫時未能精準對上，但它仍然被記在這六週裡。你記得當時的場景、自己做過的選擇，也記得那件事在當下留下過一點重量。"
+    ],
+    dialogueLines: [],
+    result: "這件小事被安全地記入六週回顧。",
+    effects: []
+  };
+}
+
 // 由過去 6 週嘅 storyEventLog 揀一條可以回顧嘅 review story，冇就回傳 null（唔生成任何內容）
 export function findSixWeekReviewStory(recentLogEntries, s) {
   const candidates = [];
   recentLogEntries.forEach(entry => {
     const hasChoiceBridge = entry.choiceId && openingReviewBridge[entry.choiceId];
-    if (!hasChoiceBridge && (!entry.storyMemoryTags || !entry.storyMemoryTags.length) && !entry.freeInputReview) return;
+    const isS2W7Entry = entry.eventId?.startsWith("s2_w7_");
+    if (!isS2W7Entry && !hasChoiceBridge && (!entry.storyMemoryTags || !entry.storyMemoryTags.length) && !entry.freeInputReview) return;
     const match = findBranchForLogEntry(entry, reviewStoryGroups);
-    if (match) candidates.push({ entry, ...match });
+    devLogS2W7Match(entry, match);
+    if (match?.authoredFallbackScene) candidates.push({ entry, authoredFallbackScene: match.authoredFallbackScene, fallbackLevel: match.fallbackLevel });
+    else if (match) candidates.push({ entry, ...match });
     else {
       const authoredFreeInputScene = buildAuthoredEventFreeInputScene(entry, s);
       if (authoredFreeInputScene) candidates.push({ entry, authoredFreeInputScene });
       else devWarn(`Missing review story branch for eventId=${entry.eventId} / variantId=${entry.variantId} / choiceId=${entry.choiceId} / storyMemoryTags=${(entry.storyMemoryTags || []).join(",")}`);
     }
   });
-  if (!candidates.length) return null;
+  if (!candidates.length) {
+    devWarn("Missing every review story branch for this six-week window; using final safe fallback.");
+    return buildSafeReviewFallback(recentLogEntries[0] || null);
+  }
 
   // 用 priority（如果 branch/group 有）決定顯示邊一條；冇 priority 就揀最近一次發生嘅
   candidates.sort((a, b) => {
@@ -187,6 +307,7 @@ export function findSixWeekReviewStory(recentLogEntries, s) {
 
   const { entry, group, branch } = candidates[0];
   if (candidates[0].authoredFreeInputScene) return candidates[0].authoredFreeInputScene;
+  if (candidates[0].authoredFallbackScene) return candidates[0].authoredFallbackScene;
   const npcName = resolveNpcName(group, entry, s);
   const freeInputNarration = buildFreeInputReviewNarration(entry);
   const freeInputEffect = buildFreeInputReviewEffect(entry);
@@ -195,10 +316,11 @@ export function findSixWeekReviewStory(recentLogEntries, s) {
     id: branch.id,
     title: interpolate(group.title, s, npcName),
     sceneHeading: `${group.timeText || ""}${group.timeText && group.placeText ? "・" : ""}${group.placeText || ""}`,
-    charactersInvolved: npcName ? [npcName] : [],
+    charactersInvolved: resolveReviewCharacterNames(group, entry, s, npcName),
     narration: [interpolate(group.sceneOpening, s, npcName), interpolate(branch.fullStoryText, s, npcName), freeInputNarration].filter(Boolean),
     dialogueLines: [],
     result: buildReviewResultText(entry),
-    effects: [...getVisibleReviewImpactList(branch).map(t => interpolate(t, s, npcName)), freeInputEffect].filter(Boolean)
+    effects: [...getVisibleReviewImpactList(branch).map(t => interpolate(t, s, npcName)), freeInputEffect].filter(Boolean),
+    hiddenImpact: branch.hiddenImpact || null
   };
 }
