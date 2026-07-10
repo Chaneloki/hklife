@@ -17,6 +17,12 @@ import { reviewStoryGroups } from "./reviewStories.js";
 import { getOpeningEventById, getOpeningEventVariant } from "./openingEvents.js";
 import { getCharacterById, getCharacterDisplayName } from "./characters.js";
 import { openingWeek1ReviewBridge } from "./openingWeek1ReviewBridge.js";
+import { openingS2W1ReviewBridge } from "./openingS2W1ReviewBridge.js";
+
+const openingReviewBridge = {
+  ...openingWeek1ReviewBridge,
+  ...openingS2W1ReviewBridge
+};
 
 const isDev = typeof location !== "undefined" && (location.hostname === "localhost" || location.hostname === "127.0.0.1" || location.protocol === "file:");
 function devWarn(msg) {
@@ -59,9 +65,9 @@ function findBranchByTagIntersection(entry, groups) {
 }
 
 // 喺一條 eventHistory 紀錄（storyEventLog entry）入面揾返 matched branch：
-// 優先用 openingWeek1ReviewBridge 呢個明確表（by choiceId），搵唔到先 fallback 落舊邏輯
+// 優先用明確 choiceId -> branch bridge（S1-W1 / S2-W1），搵唔到先 fallback 落舊邏輯
 function findBranchForLogEntry(entry, groups) {
-  const bridged = entry.choiceId ? openingWeek1ReviewBridge[entry.choiceId] : null;
+  const bridged = entry.choiceId ? openingReviewBridge[entry.choiceId] : null;
   if (bridged) {
     const group = getReviewGroupById(bridged.reviewGroupId);
     const branch = group ? (group.branches || []).find(b => b.id === bridged.branchId) : null;
@@ -111,14 +117,24 @@ function buildFreeInputReviewNarration(entry) {
 
 function buildFreeInputReviewEffect(entry) {
   const review = entry.freeInputReview;
-  if (!review || review.mode !== "api_adjustment_on_authored_context" || !review.resultDialogueText) return null;
-  return `自由回應留下的細節：${review.resultDialogueText}`;
+  if (!review || review.mode !== "api_adjustment_on_authored_context") return null;
+  const lines = [];
+  if (review.resultDialogueText) lines.push(`自由回應留下的細節：${review.resultDialogueText}`);
+  (review.effectLines || []).forEach(line => lines.push(line));
+  return lines.length ? lines.join("；") : null;
 }
 
 function getVisibleReviewImpactList(branch) {
   if (!branch) return [];
-  if (branch.impactListVisibility === "hidden") return [];
+  // 六週回顧 UI 會固定顯示「影響」，所以 authored impactList 需要轉成玩家可見摘要。
+  // impactListVisibility 只代表它不是正文段落，不代表可以留空。
   return branch.impactList || [];
+}
+
+function buildReviewResultText(entry, fallbackText = "") {
+  if (entry.freeInputReview?.resultText) return entry.freeInputReview.resultText;
+  if (entry.resultSummary) return entry.resultSummary;
+  return fallbackText || "這件小事被你記了下來，成為這六週裡其中一個清楚的片段。";
 }
 
 function buildAuthoredEventFreeInputScene(entry, s) {
@@ -140,8 +156,8 @@ function buildAuthoredEventFreeInputScene(entry, s) {
     charactersInvolved: npcName ? [npcName] : [],
     narration: [event.sceneIntro, ...openingLines, anchorResult, freeInputNarration].filter(Boolean),
     dialogueLines: [],
-    result: "",
-    effects: [freeInputEffect].filter(Boolean)
+    result: buildReviewResultText(entry, anchorResult),
+    effects: [freeInputEffect || "你的自由回應被記入這次六週回顧。"].filter(Boolean)
   };
 }
 
@@ -149,7 +165,8 @@ function buildAuthoredEventFreeInputScene(entry, s) {
 export function findSixWeekReviewStory(recentLogEntries, s) {
   const candidates = [];
   recentLogEntries.forEach(entry => {
-    if ((!entry.storyMemoryTags || !entry.storyMemoryTags.length) && !entry.freeInputReview) return;
+    const hasChoiceBridge = entry.choiceId && openingReviewBridge[entry.choiceId];
+    if (!hasChoiceBridge && (!entry.storyMemoryTags || !entry.storyMemoryTags.length) && !entry.freeInputReview) return;
     const match = findBranchForLogEntry(entry, reviewStoryGroups);
     if (match) candidates.push({ entry, ...match });
     else {
@@ -181,7 +198,7 @@ export function findSixWeekReviewStory(recentLogEntries, s) {
     charactersInvolved: npcName ? [npcName] : [],
     narration: [interpolate(group.sceneOpening, s, npcName), interpolate(branch.fullStoryText, s, npcName), freeInputNarration].filter(Boolean),
     dialogueLines: [],
-    result: "",
+    result: buildReviewResultText(entry),
     effects: [...getVisibleReviewImpactList(branch).map(t => interpolate(t, s, npcName)), freeInputEffect].filter(Boolean)
   };
 }

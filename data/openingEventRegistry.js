@@ -17,7 +17,7 @@
 // 唔係普通隨機事件，而係「六週人生片段回顧」呢個 system step 專用，唔會入普通 weekly pool 俾人隨機抽中；
 // 回顧流程由 engine.js 嘅 generateSixWeekStoryScene() 獨立處理。
 
-import { openingEvents } from "./openingEvents.js";
+import { openingEvents, selectedNeighborRule } from "./openingEvents.js";
 import { personalityIdMatches } from "./identityPersonalities.js";
 
 const isDev = typeof location !== "undefined" && (location.hostname === "localhost" || location.hostname === "127.0.0.1" || location.protocol === "file:");
@@ -34,8 +34,14 @@ function normalizeIdentityTypeId(id) {
 // 由 event id 前綴推導 weekSlot（w1_xxx -> 1, w2_xxx -> 2……）。呢個先係決定「呢個 event 屬於邊一週」
 // 嘅權威來源；weekRange 只用嚟做一致性 sanity check，唔再當成寬鬆嘅可用範圍。
 export function getEventWeekSlot(event) {
-  const m = /^w([1-9]|1[0-2])_/.exec(event.id || "");
+  const m = /^(?:s2_)?w([1-9]|1[0-2])_/.exec(event.id || "");
   return m ? Number(m[1]) : null;
+}
+
+export function getEventTermSlot(event) {
+  if (event.termId) return event.termId;
+  if ((event.id || "").startsWith("s2_w")) return "term_p1_s2";
+  return "term_p1_s1";
 }
 
 function isReplaySelector(event) {
@@ -44,8 +50,12 @@ function isReplaySelector(event) {
 
 // 只揀返「weekSlot 啱啱好等於 week」嘅 event，唔包括冇 weekSlot（id 前綴唔係 w1_~w12_）嘅 event，
 // 亦都唔包括 Week 6 嘅 system replay selector（呢個由 generateSixWeekStoryScene() 專門處理）
-export function resolveWeeklyPool(week) {
-  return openingEvents.filter(e => getEventWeekSlot(e) === week && !isReplaySelector(e));
+export function resolveWeeklyPool(week, s = null) {
+  return openingEvents.filter(e => {
+    if (getEventWeekSlot(e) !== week || isReplaySelector(e)) return false;
+    if (!s?.currentTermId) return true;
+    return getEventTermSlot(e) === s.currentTermId;
+  });
 }
 
 // conditions 喺 authored 資料入面係 string（例如 "can_fallback_to_no_fragment_dialogue"），
@@ -55,10 +65,21 @@ export function resolveWeeklyPool(week) {
 function checkStringConditions(conditions, s) {
   if (!conditions || !conditions.length) return true;
   return conditions.every(cond => {
+    if (cond && typeof cond === "object") return checkStructuredCondition(cond, s);
     if (s.flags && Object.prototype.hasOwnProperty.call(s.flags, cond)) return !!s.flags[cond];
     devWarn(`condition "${cond}" 喺 state.flags 度搵唔到對應標記，暫時當通過`);
     return true;
   });
+}
+
+function checkStructuredCondition(condition, s) {
+  switch (condition.type) {
+    case "currentTerm":
+      return s.currentTermId === condition.termId;
+    default:
+      devWarn(`structured condition "${condition.type}" 暫時未支援，當通過`);
+      return true;
+  }
 }
 
 function checkPrerequisiteMemory(prereq, s) {
@@ -98,6 +119,27 @@ function weightedPick(pool) {
   return pool[pool.length - 1];
 }
 
+function ensurePrimarySameAgeNeighbor(s) {
+  if (s.primarySameAgeNeighborId && selectedNeighborRule.pool.includes(s.primarySameAgeNeighborId)) {
+    return s.primarySameAgeNeighborId;
+  }
+  const pool = selectedNeighborRule.pool;
+  const seed = `${s.saveSeed ?? 0}_${s.currentTermId ?? ""}_${selectedNeighborRule.selectAt}`;
+  let hash = 0;
+  for (let i = 0; i < seed.length; i++) hash = (hash * 31 + seed.charCodeAt(i)) | 0;
+  const chosen = pool[Math.abs(hash) % pool.length];
+  s.primarySameAgeNeighborId = chosen;
+  s.primarySameAgeNeighborMet = false;
+  s.primarySameAgeNeighborNameKnown = false;
+  return chosen;
+}
+
+function pickRequiredEventIfNeeded(pool, s, week) {
+  if (s.currentTermId !== "term_p1_s2" || week !== 1) return null;
+  if (s.primarySameAgeNeighborId) return null;
+  return pool.find(e => e.metadata?.selectedNeighborSourceEvent && e.eventScheduling?.requiredFirstNeighborEvent) || null;
+}
+
 // variant 揀法：優先揀返同玩家已生成角色（generatedCharacters）身份／性格相符嘅 variant，
 // 令 NPC 個性同已存在嘅角色一致；揾唔到就隨機揀一個 variant（authored 內容本身冇規定必揀邊個），
 // 並喺 dev mode 出 warning 提示冇personality match（唔係錯誤，只係話冇對應到已生成角色）。
@@ -114,6 +156,12 @@ function findMatchingCharacter(v, s) {
 function pickVariant(event, s) {
   const variants = event.variants || [];
   if (!variants.length) return null;
+  if (event.metadata?.variantSelectionMode === "selectedNeighborOnly") {
+    const selectedId = ensurePrimarySameAgeNeighbor(s);
+    const selectedVariant = variants.find(v => v.neighborId === selectedId || v.npcIdHint === selectedId);
+    if (selectedVariant) return selectedVariant;
+    devWarn(`事件 ${event.id} 指定 selectedNeighborOnly，但搵唔到 ${selectedId} variant`);
+  }
   const knownHintVariant = variants.find(v => v.npcIdHint && (s.knownCharacters || []).includes(v.npcIdHint));
   if (knownHintVariant) return knownHintVariant;
   const matched = variants.find(v => findMatchingCharacter(v, s));
@@ -126,6 +174,10 @@ function pickVariant(event, s) {
 // 等 UI 可以用 engine 現有嘅 getCharacterById／getCharacterDisplayName 顯示正確、持久嘅名，
 // 唔會再出現冇對應角色記錄嘅 ad hoc npc id（會令 UI 冇 senderId 可以查，跌落「神秘人」fallback）。
 export function resolveOpeningEventNpcId(event, variant, s) {
+  if (variant?.usesSelectedNeighbor) {
+    if (!s.primarySameAgeNeighborId) ensurePrimarySameAgeNeighbor(s);
+    return s.primarySameAgeNeighborId || null;
+  }
   const matched = findMatchingCharacter(variant, s);
   if (matched) return matched.id;
   // 冇 personality 完全對得上嘅已生成角色（呢個 identityType 嘅 pool 可能仲有未覆蓋 event 嘅 personality），
@@ -148,10 +200,10 @@ export function resolveOpeningEventNpcId(event, variant, s) {
 // week 參數預設用 s.currentWeek，但呼叫方可以指定用邊一週嘅 pool（例如「玩完 Week 1 撳下一週」
 // 想睇返 Week 1 自己嘅 event，就要傳入 Week 1，而唔係 advanceWeek() 已經 +1 之後嘅 currentWeek）。
 export function pickOpeningEventForWeek(s, week = s.currentWeek) {
-  const weeklyPool = resolveWeeklyPool(week);
+  const weeklyPool = resolveWeeklyPool(week, s);
   const pool = weeklyPool.filter(e => isEligible(e, s));
   if (!pool.length) return null;
-  const chosenEvent = weightedPick(pool);
+  const chosenEvent = pickRequiredEventIfNeeded(pool, s, week) || weightedPick(pool);
   const chosenVariant = pickVariant(chosenEvent, s);
   if (!chosenVariant) { devWarn(`事件 ${chosenEvent.id} 冇任何 variant，跳過`); return null; }
 
@@ -178,7 +230,8 @@ export function testWeeklyPoolPurity() {
     const pool = resolveWeeklyPool(week);
     const ids = pool.map(e => e.id);
     const expectedPrefix = `w${week}_`;
-    const impure = ids.filter(id => !id.startsWith(expectedPrefix));
+    const expectedS2Prefix = `s2_w${week}_`;
+    const impure = ids.filter(id => !id.startsWith(expectedPrefix) && !id.startsWith(expectedS2Prefix));
     results.push({ week, ids, impure, pure: impure.length === 0 });
   }
   return results;

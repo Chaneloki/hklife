@@ -13,14 +13,20 @@ import { characterSlots } from "./characters.js";
 import { openingEvents } from "./openingEvents.js";
 import { reviewStoryGroups } from "./reviewStories.js";
 import { locations } from "./locations.js";
-import { getEventWeekSlot, resolveWeeklyPool, testWeeklyPoolPurity } from "./openingEventRegistry.js";
+import { getEventWeekSlot, getEventTermSlot, resolveWeeklyPool, testWeeklyPoolPurity } from "./openingEventRegistry.js";
 import { openingWeek1ReviewBridge } from "./openingWeek1ReviewBridge.js";
+import { openingS2W1ReviewBridge } from "./openingS2W1ReviewBridge.js";
 import { actions, actionTabs, actionCategories } from "./actions.js";
 import { hobbies } from "./hobbies.js";
 import { createInitialState } from "../js/state.js";
 import { getPersonalitiesForIdentity, getPersonalityByAnyId } from "./identityPersonalities.js";
 import { getIdentityTypeById } from "./identityTypes.js";
 import { SAME_AGE_PEER_ICON_MANIFEST, SENIOR_STUDENT_ICON_MANIFEST } from "./characterIconManifest.js";
+
+const openingReviewBridge = {
+  ...openingWeek1ReviewBridge,
+  ...openingS2W1ReviewBridge
+};
 
 function warn(msg) {
   console.warn(`[內容檢查] ${msg}`);
@@ -140,15 +146,6 @@ export function validateContentData() {
         if (!c.playerLine) warnings.push(`opening event ${e.id} / variant ${v.variantId} 嘅 choice ${c.id} 冇 playerLine`);
         if (!c.resultDialogue || !c.resultDialogue.text) warnings.push(`opening event ${e.id} / variant ${v.variantId} 嘅 choice ${c.id} 冇 resultText（resultDialogue.text）`);
         if (!c.memoryAdd || !c.memoryAdd.length) warnings.push(`opening event ${e.id} / variant ${v.variantId} 嘅 choice ${c.id} 冇 storyMemoryTags（memoryAdd）`);
-        // 優先查 openingWeek1ReviewBridge（by choiceId，Week 1 嘅權威對照表）；
-        // 冇喺 bridge 入面先落返用 storyMemoryTag 直接比對（適用於未來 W2–W6 review story）
-        const bridged = openingWeek1ReviewBridge[c.id];
-        const skipReviewBranchCheck = sched.sourceChannel === "weekly_authored_w7_w12";
-        (c.memoryAdd || []).forEach(tag => {
-          if (!skipReviewBranchCheck && !bridged && !reviewableTagToBranch.has(tag)) {
-            warnings.push(`opening event ${e.id} / variant ${v.variantId} 嘅 choice ${c.id} 嘅 storyMemoryTag「${tag}」揾唔到對應嘅 review story branch（Missing review story branch for eventId=${e.id} / variantId=${v.variantId} / choiceId=${c.id} / storyMemoryTags=${tag}）`);
-          }
-        });
       });
     });
     (e.fallbackChoices || []).forEach(c => {
@@ -156,6 +153,48 @@ export function validateContentData() {
         // fallback 本身預期就係 emergency-only，呢度只係提提：如果 fallback 被當正常選項用會有問題
       }
     });
+  });
+
+  // ---- 六週回顧「錨點週」保證：findSixWeekReviewStory() 淨係需要 6 週入面有一週嘅 opening
+  // event choices 100% resolve 到 review branch（bridge 或 storyMemoryTag fallback），唔要求
+  // 6 週逐週都寫齊（呢個係 S1-W1-6／S2-W1-6／S1-W7-12 而家嘅共通做法，錨點分別係 W1／S2-W1／W9）。
+  // 呢度用 termId + weekSlot 自動分 block（每 6 週一組），完全唔靠寫死邊個 stage/channel，
+  // 之後加新 stage（例如 S1-W13-18、S3……）都會自動被呢個檢查覆蓋，唔使記得手動加白名單。
+  function isChoiceResolved(c) {
+    if (openingReviewBridge[c.id]) return true;
+    return (c.memoryAdd || []).some(tag => reviewableTagToBranch.has(tag));
+  }
+  const blockMap = new Map(); // `${termId}#${blockStartWeek}` -> Map<week, {resolved, total}>
+  openingEvents.forEach(e => {
+    const weekSlot = getEventWeekSlot(e);
+    if (weekSlot === null) return;
+    const termId = getEventTermSlot(e);
+    const blockStart = Math.floor((weekSlot - 1) / 6) * 6 + 1;
+    const blockKey = `${termId}#${blockStart}`;
+    if (!blockMap.has(blockKey)) blockMap.set(blockKey, new Map());
+    const weekStats = blockMap.get(blockKey);
+    if (!weekStats.has(weekSlot)) weekStats.set(weekSlot, { resolved: 0, total: 0 });
+    const stat = weekStats.get(weekSlot);
+    (e.variants || []).forEach(v => {
+      (v.playerChoices || []).forEach(c => {
+        stat.total += 1;
+        if (isChoiceResolved(c)) stat.resolved += 1;
+      });
+    });
+  });
+  blockMap.forEach((weekStats, blockKey) => {
+    const [termId, blockStartStr] = blockKey.split("#");
+    const blockStart = Number(blockStartStr);
+    const blockEnd = blockStart + 5;
+    const weeksInBlock = Array.from(weekStats.keys());
+    const hasFullyCoveredWeek = weeksInBlock.some(w => {
+      const stat = weekStats.get(w);
+      return stat.total > 0 && stat.resolved === stat.total;
+    });
+    if (!hasFullyCoveredWeek) {
+      const detail = weeksInBlock.map(w => `W${w}(${weekStats.get(w).resolved}/${weekStats.get(w).total})`).join("、");
+      warnings.push(`六週回顧缺少錨點週：${termId} 第 ${blockStart}-${blockEnd} 週入面，冇任何一週嘅 opening event choices 100% 有對應 review story branch（各週覆蓋率：${detail}），玩家喺呢 6 週完結時有機會完全睇唔到回顧故事`);
+    }
   });
 
   // ---- review story branches ----
@@ -175,19 +214,19 @@ export function validateContentData() {
     });
   });
 
-  // ---- openingWeek1ReviewBridge：確認每一條 bridge entry 都指向真實存在嘅 group/branch，
+  // ---- openingReviewBridge：確認每一條 bridge entry 都指向真實存在嘅 group/branch，
   // 同埋列出信心較低（confidence: "weak"）嘅配對俾作者覆核 ----
   const weakBridgeEntries = [];
-  Object.entries(openingWeek1ReviewBridge).forEach(([choiceId, b]) => {
+  Object.entries(openingReviewBridge).forEach(([choiceId, b]) => {
     const group = reviewStoryGroups.find(g => g.id === b.reviewGroupId);
-    if (!group) { warnings.push(`openingWeek1ReviewBridge 嘅 ${choiceId} 引用不存在嘅 reviewGroupId「${b.reviewGroupId}」`); return; }
+    if (!group) { warnings.push(`openingReviewBridge 嘅 ${choiceId} 引用不存在嘅 reviewGroupId「${b.reviewGroupId}」`); return; }
     if (!(group.branches || []).some(br => br.id === b.branchId)) {
-      warnings.push(`openingWeek1ReviewBridge 嘅 ${choiceId} 引用不存在嘅 branchId「${b.branchId}」（group ${b.reviewGroupId}）`);
+      warnings.push(`openingReviewBridge 嘅 ${choiceId} 引用不存在嘅 branchId「${b.branchId}」（group ${b.reviewGroupId}）`);
     }
     if (b.confidence === "weak") weakBridgeEntries.push(choiceId);
   });
   if (weakBridgeEntries.length) {
-    warnings.push(`openingWeek1ReviewBridge 有 ${weakBridgeEntries.length} 條低信心配對（authored 檔案冇一模一樣嘅對應，用剩低嗰個配對），建議作者覆核：${weakBridgeEntries.join("、")}`);
+    warnings.push(`openingReviewBridge 有 ${weakBridgeEntries.length} 條低信心配對（authored 檔案冇一模一樣嘅對應，用剩低嗰個配對），建議作者覆核：${weakBridgeEntries.join("、")}`);
   }
 
   // ---- Skill property 系統：skillExp 現階段只可以由 hobby class 週處理增加 ----

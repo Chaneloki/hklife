@@ -20,6 +20,14 @@ export const SAME_AGE_PEER_ICON_MANIFEST = {
   "柏宇": `${BASE}/same_age_peer/icon_柏宇.jpg`
 };
 
+// ---------- same_age_neighbor：校外同齡鄰居，跟同班 same_age_peer 分開 ----------
+export const SAME_AGE_NEIGHBOR_ICON_MANIFEST = {
+  "樂言": `${BASE}/same_age_neighbor/icon_樂言.png`,
+  "詠晴": `${BASE}/same_age_neighbor/icon_詠晴.png`,
+  "皓朗": `${BASE}/same_age_neighbor/icon_皓朗.png`,
+  "敏希": `${BASE}/same_age_neighbor/icon_敏希.png`
+};
+
 // ---------- senior_student：固定名字 -> icon，lookup key 一定要用真名（displayNameKnown／
 // baseName），唔可以用 primaryAddressLabel（例如「芷悠師姐」），唔然搵唔到對應檔案 ----------
 export const SENIOR_STUDENT_ICON_MANIFEST = {
@@ -55,7 +63,7 @@ export const DEFAULT_CHILD_ICON = silhouetteSvg("#fff2d6", "#d8c39a");
 export const DEFAULT_ADULT_ICON = silhouetteSvg("#eee3f5", "#b7a0cf");
 export const DEFAULT_UNKNOWN_ICON = silhouetteSvg("#eaeaea", "#bdbdbd");
 
-const CHILD_IDENTITIES = ["same_age_peer", "senior_student", "family_peer"];
+const CHILD_IDENTITIES = ["same_age_peer", "same_age_neighbor", "senior_student", "family_peer"];
 
 const isDev = typeof location !== "undefined" &&
   (location.hostname === "localhost" || location.hostname === "127.0.0.1" || location.protocol === "file:");
@@ -99,7 +107,7 @@ function pickStablePooledIcon(character, s) {
 
 // 角色 icon resolution：
 // 1. character.iconPath 已經 cache 咗就直接用
-// 2. same_age_peer／senior_student：用 baseName／displayNameKnown（真名，唔係 address label）
+// 2. same_age_peer／same_age_neighbor／senior_student：用 baseName／displayNameKnown（真名，唔係 address label）
 //    去 manifest 度搵固定 icon，搵唔到就 dev warning + default child icon
 // 3. teacher／tutor／family_elder：由對應 pool 用 saveSeed 做 deterministic 揀選，一旦揀咗就
 //    cache 落 character.iconPath，之後成局都用返同一張
@@ -122,6 +130,17 @@ export function resolveCharacterIcon(character, s) {
     return DEFAULT_CHILD_ICON;
   }
 
+  if (identity === "same_age_neighbor") {
+    const fixed = SAME_AGE_NEIGHBOR_ICON_MANIFEST[baseName];
+    if (fixed) {
+      character.iconPath = fixed;
+      character.iconSource = "fixed_by_name";
+      return fixed;
+    }
+    warnMissingFixedIcon("same_age_neighbor", baseName);
+    return DEFAULT_CHILD_ICON;
+  }
+
   if (identity === "senior_student") {
     const fixed = SENIOR_STUDENT_ICON_MANIFEST[baseName];
     if (fixed) {
@@ -131,6 +150,12 @@ export function resolveCharacterIcon(character, s) {
     }
     warnMissingFixedIcon("senior_student", baseName);
     return DEFAULT_CHILD_ICON;
+  }
+
+  if (character.explicitIconPath) {
+    character.iconPath = character.explicitIconPath;
+    character.iconSource = "explicit_path";
+    return character.explicitIconPath;
   }
 
   if (character.explicitIconName) {

@@ -28,7 +28,7 @@ import {
 import { hobbies, getHobbyById, MAX_ACTIVE_HOBBIES } from "../data/hobbies.js";
 import { competitions, getCompetitionById } from "../data/opportunities.js";
 import { getStoryScenesForEvents } from "../data/storyScenes.js";
-import { getOpeningEventById, getOpeningEventVariant } from "../data/openingEvents.js";
+import { getOpeningEventById, getOpeningEventVariant, sameAgeNeighborPool } from "../data/openingEvents.js";
 import { pickOpeningEventForWeek, resetOpeningEventWeekState, resolveOpeningEventNpcId } from "../data/openingEventRegistry.js";
 import { findSixWeekReviewStory } from "../data/reviewStoryRegistry.js";
 import {
@@ -231,8 +231,9 @@ function isCharacterEligibleForActiveMessage(character, s = state) {
 
 function getActiveMessageThresholdsForCharacter(character, s = state) {
   const identity = getCharacterIdentity(character);
-  const activeMessageIdentities = ["same_age_peer", "senior_student", "normal_friend", "special_friend"];
+  const activeMessageIdentities = ["same_age_peer", "same_age_neighbor", "senior_student", "normal_friend", "special_friend"];
   if (!activeMessageIdentities.includes(identity)) return [];
+  if (identity === "same_age_neighbor" && character.id !== s.primarySameAgeNeighborId) return [];
   return isPrimaryStage(s) ? ACTIVE_MESSAGE_THRESHOLDS : ACTIVE_MESSAGE_THRESHOLDS;
 }
 
@@ -545,7 +546,7 @@ export function meetCharacter(characterId, source, s = state) {
   addKnownCharacter(characterId, s);
   markInteraction(characterId, s);
   if (!alreadyKnown) {
-    const character = getCharacterById(characterId);
+    const character = getCharacterById(characterId, s);
     generateReviewLog({
       type: "支線",
       title: `你認識咗${character ? character.name : "一個新朋友"}`,
@@ -2004,7 +2005,8 @@ export function drawOpeningEventForWeek(s = state, week = s.currentWeek) {
     eventId: event.id,
     variantId: variant.variantId,
     senderId: npcId || undefined,
-    title: event.title,
+    speakerDisplayName: resolveOpeningEventHeaderDisplayName(event, variant, s, npcId),
+    title: interpolateOpeningEventText(event.title, s),
     lines: getOpeningDialogueLines(event, variant, s, npcId),
     choices: variant.playerChoices.map(c => ({
       text: c.buttonText || c.text,
@@ -2019,10 +2021,45 @@ function hasAnyMemory(s, tags) {
   return tags.some(tag => (s.memories || []).includes(tag));
 }
 
+function getPrimarySameAgeNeighborData(s = state) {
+  return sameAgeNeighborPool.find(n => n.id === s.primarySameAgeNeighborId) || null;
+}
+
+function getNeighborDisplayNameForOpeningText(s = state) {
+  const selectedNeighbor = getPrimarySameAgeNeighborData(s);
+  if (!selectedNeighbor) return "同年鄰居";
+  if (!s.primarySameAgeNeighborMet && !s.primarySameAgeNeighborNameKnown) return selectedNeighbor.unknownDisplayName;
+  return selectedNeighbor.knownDisplayName;
+}
+
+function interpolateOpeningEventText(text, s = state) {
+  if (typeof text !== "string") return text;
+  const selectedNeighbor = getPrimarySameAgeNeighborData(s);
+  return text
+    .replaceAll("{neighborDisplayName}", getNeighborDisplayNameForOpeningText(s))
+    .replaceAll("{selectedNeighbor.fixedName}", selectedNeighbor?.fixedName || "");
+}
+
 // npcId 呢度一定要用 resolveOpeningEventNpcId() 算出嚟嘅實際 character slot id（芷悠嘅 slot id
 // 係 "senior_friendly_girl_zhiyau"），唔可以再靠 authored 資料入面嘅 variant.npcIdHint 字串直接
 // 比對——authored pool 嗰個欄位淨係得個描述性代號（例如 "senior_student_friendly"），同真正嘅
 // character slot id 對唔上，會令呢個 continuity 分支永遠行唔到
+function resolveOpeningEventHeaderDisplayName(event, variant, s = state, npcId = null) {
+  if (npcId) {
+    return getCharacterDisplayName(npcId, s) || getCharacterById(npcId, s)?.name || null;
+  }
+  const speakerType = event?.speakerType || variant?.speakerType || "";
+  const identityType = variant?.identityTypeId || event?.identityTypeId || "";
+  const category = event?.category || "";
+  const fallback = interpolateOpeningEventText(variant?.speakerName || variant?.parentRole || variant?.npcNameFallback || event?.speakerName || "", s);
+  if (speakerType === "family" || speakerType === "parent" || identityType === "family" || identityType === "family_elder" || category.includes("family") || variant?.variantType === "family") {
+    return fallback || "家人";
+  }
+  if (fallback) return fallback;
+  if ((variant?.openingDialogue || []).every(line => line.speaker === "旁白")) return "旁白";
+  return "旁白";
+}
+
 function getOpeningDialogueLines(event, variant, s, npcId) {
   const w1ZhiyauMemories = [
     "w1_senior_friendly_helped_with_handbook",
@@ -2040,25 +2077,48 @@ function getOpeningDialogueLines(event, variant, s, npcId) {
       ...(variant.openingDialogue || []).map(d => `${alreadyMet ? "芷悠" : d.speaker}：${d.text}`)
     ];
   }
-  const speakerLabel = resolveOpeningEventSpeakerLabel(variant, s, npcId);
-  const sceneIntroLines = event.sceneIntro ? [{ type: "narrator", text: event.sceneIntro }] : [];
-  const dialogueLines = (variant.openingDialogue || []).map(d => `${speakerLabel || d.speaker}：${d.text}`);
+  const speakerLabel = resolveOpeningEventSpeakerLabel(event, variant, s, npcId);
+  const sceneIntroLines = event.sceneIntro ? [{ type: "narrator", text: interpolateOpeningEventText(event.sceneIntro, s) }] : [];
+  const dialogueLines = (variant.openingDialogue || []).map(d => {
+    const speaker = d.speaker === "旁白" ? d.speaker : (speakerLabel || d.speaker);
+    return `${speaker}：${interpolateOpeningEventText(d.text, s)}`;
+  });
   return [...sceneIntroLines, ...dialogueLines];
 }
 
-function resolveOpeningEventSpeakerLabel(variant, s, npcId) {
-  if (!npcId) return variant.knownDisplayName || variant.unknownDisplayName || variant.npcNameFallback || null;
+function resolveOpeningEventSpeakerLabel(event, variant, s, npcId) {
+  if (!npcId) return resolveOpeningEventHeaderDisplayName(event, variant, s, npcId);
   const known = (s.knownCharacters || []).includes(npcId);
+  if (variant?.usesSelectedNeighbor && (s.primarySameAgeNeighborMet || s.primarySameAgeNeighborNameKnown)) {
+    return getCharacterDisplayName(npcId, s);
+  }
   if (known && variant.knownDisplayName) return variant.knownDisplayName;
   if (!known && variant.unknownDisplayName) return variant.unknownDisplayName;
   return getCharacterDisplayName(npcId, s);
 }
 
+function completePrimarySameAgeNeighborMeet(event, s = state) {
+  if (!event?.metadata?.selectedNeighborSourceEvent && event?.sourceTopicId !== "S2-W1-2") return;
+  if (!s.primarySameAgeNeighborId) return;
+  s.primarySameAgeNeighborMet = true;
+  s.primarySameAgeNeighborNameKnown = true;
+  meetCharacter(s.primarySameAgeNeighborId, "你喺屋苑遇見同齡鄰居，知道咗對方嘅名字。", s);
+  getCharacterRelationship(s.primarySameAgeNeighborId, s);
+}
+
 function applyOpeningEventChoiceUnlocks(choice, s) {
   const unlocks = choice.unlocks || [];
   unlocks.forEach(unlock => {
-    if (!unlock || unlock.type !== "unlockCharacter" || !unlock.characterId) return;
-    meetCharacter(unlock.characterId, unlock.reason || `喺「${unlock.sourceEventId || "事件"}」入面認識`, s);
+    if (!unlock) return;
+    if (unlock.type === "unlockCharacter" && unlock.characterId) {
+      meetCharacter(unlock.characterId, unlock.reason || `喺「${unlock.sourceEventId || "事件"}」入面認識`, s);
+    }
+    if (unlock.type === "revealPrimarySameAgeNeighborName" && s.primarySameAgeNeighborId) {
+      s.primarySameAgeNeighborMet = true;
+      s.primarySameAgeNeighborNameKnown = true;
+      meetCharacter(s.primarySameAgeNeighborId, unlock.reason || "你知道了同齡鄰居的名字。", s);
+      getCharacterRelationship(s.primarySameAgeNeighborId, s);
+    }
   });
 }
 
@@ -2076,7 +2136,7 @@ export function getPendingOpeningEventContext(s = state) {
     variant,
     npcId,
     npc,
-    npcDisplayName: npc ? (getCharacterDisplayName(npcId, s) || npc.name) : (variant.npcNameFallback || "對方"),
+    npcDisplayName: resolveOpeningEventHeaderDisplayName(event, variant, s, npcId) || "對方",
     lines: getOpeningDialogueLines(event, variant, s, npcId),
     choices: variant.playerChoices || []
   };
@@ -2193,14 +2253,58 @@ function resolveFreeInputReviewAnchorChoice(variant, sanitizedEvaluation) {
   return choices.find(choice => choice.id === requestedId) || null;
 }
 
-function buildFreeInputReviewAdjustment(playerFreeReply, sanitizedEvaluation, anchorChoice) {
+function ensureOpeningFreeInputDeltas(sanitizedEvaluation, anchorChoice, hasNpc, s = state) {
+  if (!sanitizedEvaluation) return;
+  if (!Object.keys(sanitizedEvaluation.statusDelta || {}).length) {
+    const fallbackStatus = Object.entries(anchorChoice?.statusDelta || {})
+      .filter(([stat, amount]) => s.stats[stat] !== undefined && amount)
+      .slice(0, 2);
+    if (fallbackStatus.length) {
+      sanitizedEvaluation.statusDelta = Object.fromEntries(fallbackStatus);
+    } else if (s.stats["自信"] !== undefined) {
+      sanitizedEvaluation.statusDelta = { 自信: 1 };
+    } else {
+      const firstStat = Object.keys(s.stats || {})[0];
+      if (firstStat) sanitizedEvaluation.statusDelta = { [firstStat]: 1 };
+    }
+  }
+
+  if (!Object.keys(sanitizedEvaluation.skillExpDelta || {}).length) {
+    const fallbackSkill = Object.entries(anchorChoice?.skillExpDelta || {})
+      .find(([skill, amount]) => s.skillExp[skill] !== undefined && amount);
+    if (fallbackSkill) {
+      sanitizedEvaluation.skillExpDelta = { [fallbackSkill[0]]: fallbackSkill[1] };
+    } else if (s.skillExp["閱讀"] !== undefined) {
+      sanitizedEvaluation.skillExpDelta = { 閱讀: 1 };
+    } else {
+      const firstSkill = Object.keys(s.skillExp || {})[0];
+      if (firstSkill) sanitizedEvaluation.skillExpDelta = { [firstSkill]: 1 };
+    }
+  }
+
+  if (hasNpc && !(sanitizedEvaluation.relationshipDelta || []).length) {
+    const fallbackRelationship = (anchorChoice?.relationshipDelta || [])
+      .find(delta => delta?.targetScope === "currentSpeaker" && RELATIONSHIP_DIMENSIONS.includes(delta.dimension) && delta.amount);
+    if (fallbackRelationship) {
+      sanitizedEvaluation.relationshipDelta = [{
+        dimension: fallbackRelationship.dimension,
+        amount: clampEventFreeInputAmount(fallbackRelationship.amount) || 1
+      }];
+    } else {
+      sanitizedEvaluation.relationshipDelta = [{ dimension: "closeness", amount: 1 }];
+    }
+  }
+}
+
+function buildFreeInputReviewAdjustment(playerFreeReply, sanitizedEvaluation, anchorChoice, effectLines = []) {
   const hidden = hasSensitiveFreeInputPattern(playerFreeReply);
   return {
     mode: "api_adjustment_on_authored_context",
     anchorChoiceId: anchorChoice?.id || null,
     playerLinePreview: hidden ? "（自己輸入內容已隱藏）" : safeReviewText(playerFreeReply, 64),
     resultText: safeReviewText(sanitizedEvaluation?.resultText, 160),
-    resultDialogueText: safeReviewText(sanitizedEvaluation?.resultDialogue?.text, 160)
+    resultDialogueText: safeReviewText(sanitizedEvaluation?.resultDialogue?.text, 160),
+    effectLines: (effectLines || []).map(line => safeReviewText(line, 120)).filter(Boolean)
   };
 }
 
@@ -2250,11 +2354,19 @@ export function resolveOpeningEventChoice(choiceIndex, s = state) {
     outcomeSummary.push(detailed ? `${skill}經驗 ${amount >= 0 ? "+" : ""}${amount}` : `${skill}經驗${amount >= 0 ? "增加咗少少" : "減少咗少少"}`);
   });
 
-  const npcId = resolveOpeningEventNpcId(getOpeningEventById(pending.eventId), variant, s);
-  const hasExplicitUnlocks = Array.isArray(choice.unlocks);
+  const event = getOpeningEventById(pending.eventId);
+  const npcId = resolveOpeningEventNpcId(event, variant, s);
+  const hasExplicitUnlocks = Array.isArray(choice.unlocks) && (choice.unlocks.length > 0 || variant?.usesSelectedNeighbor);
   if (npcId && !hasExplicitUnlocks) meetCharacter(npcId, `喺「${pending.eventId}」入面遇到`, s);
   if (hasExplicitUnlocks) applyOpeningEventChoiceUnlocks(choice, s);
+  completePrimarySameAgeNeighborMeet(event, s);
   const npcDisplayName = npcId ? (getCharacterDisplayName(npcId, s) || getCharacterById(npcId, s)?.name || "對方") : (variant.npcNameFallback || "對方");
+  const resolvedResultDialogue = choice.resultDialogue
+    ? {
+        ...choice.resultDialogue,
+        text: interpolateOpeningEventText(choice.resultDialogue.text, s)
+      }
+    : null;
   (choice.relationshipDelta || []).forEach(r => {
     if (r.targetScope !== "currentSpeaker") {
       console.warn(`[opening event] choice ${choice.id} 用咗未支援嘅 relationshipDelta.targetScope「${r.targetScope}」，跳過`);
@@ -2265,8 +2377,8 @@ export function resolveOpeningEventChoice(choiceIndex, s = state) {
     outcomeSummary.push(detailed ? `${npcDisplayName}${r.dimension} ${r.amount >= 0 ? "+" : ""}${r.amount}` : `${npcDisplayName}對你嘅感覺有咗變化`);
   });
 
-  if (npcId && choice.resultDialogue && choice.resultDialogue.text) {
-    addCharacterMemory(npcId, choice.resultDialogue.text, s);
+  if (npcId && resolvedResultDialogue && resolvedResultDialogue.text) {
+    addCharacterMemory(npcId, resolvedResultDialogue.text, s);
   }
   (choice.memoryAdd || []).forEach(tag => {
     if (!s.memories.includes(tag)) s.memories.push(tag);
@@ -2274,7 +2386,7 @@ export function resolveOpeningEventChoice(choiceIndex, s = state) {
 
   recordStoryEvent({
     eventId: pending.eventId,
-    eventTitle: (getOpeningEventById(pending.eventId) || {}).title || pending.eventId,
+    eventTitle: interpolateOpeningEventText((event || {}).title || pending.eventId, s),
     week: pending.week ?? s.currentWeek,
     totalWeek: s.totalWeeksElapsed ?? 0,
     location: s.locationId,
@@ -2298,7 +2410,7 @@ export function resolveOpeningEventChoice(choiceIndex, s = state) {
   checkGoalProgress(s);
   checkLifeDirection(s);
 
-  return { outcomeSummary, resultDialogue: choice.resultDialogue || null };
+  return { outcomeSummary, resultDialogue: resolvedResultDialogue };
 }
 
 export function resolveOpeningEventFreeReply(playerFreeReply, evaluation, s = state) {
@@ -2310,6 +2422,9 @@ export function resolveOpeningEventFreeReply(playerFreeReply, evaluation, s = st
   const { pending, event, variant, npcId, npcDisplayName } = context;
   if (npcId) meetCharacter(npcId, `喺「${pending.eventId}」入面遇到`, s);
   const reviewAnchorChoice = resolveFreeInputReviewAnchorChoice(variant, sanitized);
+  completePrimarySameAgeNeighborMeet(event, s);
+  const resolvedNpcDisplayName = npcId ? (getCharacterDisplayName(npcId, s) || npcDisplayName) : npcDisplayName;
+  ensureOpeningFreeInputDeltas(sanitized, reviewAnchorChoice, !!npcId, s);
 
   Object.entries(sanitized.statusDelta).forEach(([stat, amount]) => {
     applyResourceChangeWithCap(stat, amount, s);
@@ -2335,13 +2450,13 @@ export function resolveOpeningEventFreeReply(playerFreeReply, evaluation, s = st
       statusDelta: sanitized.statusDelta,
       skillExpDelta: sanitized.skillExpDelta,
       relationshipRecords,
-      npcDisplayName
+      npcDisplayName: resolvedNpcDisplayName
     }, s)
   ].filter(Boolean);
 
   recordStoryEvent({
     eventId: pending.eventId,
-    eventTitle: event.title || pending.eventId,
+    eventTitle: interpolateOpeningEventText(event.title || pending.eventId, s),
     week: pending.week ?? s.currentWeek,
     totalWeek: s.totalWeeksElapsed ?? 0,
     location: s.locationId,
@@ -2359,14 +2474,14 @@ export function resolveOpeningEventFreeReply(playerFreeReply, evaluation, s = st
     variantId: pending.variantId,
     choiceId: reviewAnchorChoice?.id || "api_free_input",
     storyMemoryTags: reviewAnchorChoice?.memoryAdd || [],
-    freeInputReview: buildFreeInputReviewAdjustment(playerFreeReply, sanitized, reviewAnchorChoice)
+    freeInputReview: buildFreeInputReviewAdjustment(playerFreeReply, sanitized, reviewAnchorChoice, outcomeSummary.slice(1))
   }, s);
   recordFreeInputReviewLog({
     id: `opening_event:${pending.eventId}:${pending.variantId}:${pending.week ?? s.currentWeek}`,
     title: `你用自己的方式處理：${event.title || pending.eventId}`,
     resultText: sanitized.resultText,
     effectLines: outcomeSummary.slice(1),
-    tags: ["自己輸入", "事件", npcId ? npcDisplayName : ""]
+    tags: ["自己輸入", "事件", npcId ? resolvedNpcDisplayName : ""]
   }, s);
 
   s.pendingOpeningEvent = null;
@@ -2378,7 +2493,7 @@ export function resolveOpeningEventFreeReply(playerFreeReply, evaluation, s = st
     playerLine: playerFreeReply,
     outcomeSummary,
     resultDialogue: {
-      speaker: sanitized.resultDialogue.speaker || npcDisplayName,
+      speaker: sanitized.resultDialogue.speaker || resolvedNpcDisplayName,
       text: sanitized.resultDialogue.text
     }
   };
@@ -2389,9 +2504,23 @@ export function resolveOpeningEventFreeReply(playerFreeReply, evaluation, s = st
 // engine 唔會自動生成任何劇情、對話或結果。如果過去 6 週冇任何已發生事件對應到 authored 內容，
 // 就唔會顯示故事（回傳 null，UI 會顯示「呢 6 週冇特別可以回顧嘅人生片段」）。
 // ============================================================
+function normalizeSixWeekStoryScene(scene, sourceEntry = null) {
+  if (!scene) return scene;
+  const normalized = { ...scene };
+  const result = typeof normalized.result === "string" ? normalized.result.trim() : "";
+  normalized.result = result || sourceEntry?.resultSummary || "這件小事被你記了下來，成為這六週裡其中一個清楚的片段。";
+  const effects = (normalized.effects || []).filter(Boolean);
+  normalized.effects = effects.length ? effects : ["這段經歷會留在你的六週回顧裡，影響你之後怎樣記住自己和身邊的人。"];
+  return normalized;
+}
+
 export function generateSixWeekStoryScene(s = state) {
-  const sinceWeek = (s.totalWeeksElapsed ?? 0) - 6;
-  const recentLogEntries = s.storyEventLog.filter(e => (e.totalWeek ?? 0) > sinceWeek);
+  const lastReviewWeek = s.lastStoryReviewWeek ?? 0;
+  const includeOpeningBoundary = lastReviewWeek <= 0;
+  const recentLogEntries = s.storyEventLog.filter(e => {
+    const totalWeek = e.totalWeek ?? 0;
+    return includeOpeningBoundary ? totalWeek >= lastReviewWeek : totalWeek > lastReviewWeek;
+  });
   const recentEventIds = recentLogEntries.map(e => e.eventId);
   s.lastStoryReviewWeek = s.totalWeeksElapsed ?? 0;
   if (!recentEventIds.length) return null;
@@ -2400,8 +2529,9 @@ export function generateSixWeekStoryScene(s = state) {
   if (!candidates.length) {
     const openingScene = findSixWeekReviewStory(recentLogEntries, s);
     if (openingScene) {
-      s.sixWeekStoryHistory.push(openingScene);
-      return openingScene;
+      const normalizedOpeningScene = normalizeSixWeekStoryScene(openingScene);
+      s.sixWeekStoryHistory.push(normalizedOpeningScene);
+      return normalizedOpeningScene;
     }
     return null;
   }
@@ -2427,8 +2557,9 @@ export function generateSixWeekStoryScene(s = state) {
   applyEffects(chosen.identityEffects || [], s);
   applyEffects(chosen.scheduleEffects || [], s);
 
-  s.sixWeekStoryHistory.push(scene);
-  return scene;
+  const normalizedScene = normalizeSixWeekStoryScene(scene);
+  s.sixWeekStoryHistory.push(normalizedScene);
+  return normalizedScene;
 }
 
 export function generateStageReview(s = state) {

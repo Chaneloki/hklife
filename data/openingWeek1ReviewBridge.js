@@ -68,12 +68,20 @@ export const openingWeek1ReviewBridge = {
   w1_teacher_first_roll_call_caring_tell_after_class: { reviewGroupId: "review_w1_teacher_roll_call_pastoral_care", branchId: "silent_now_talk_later", confidence: "strong" },
 
   // ---- w1_dismissal_line_confusion / seniorFriendly ----
+  w1_senior_friendly_helped_with_handbook: { reviewGroupId: "review_w1_dismissal_friendly_senior", branchId: "show_handbook_to_senior", confidence: "strong" },
+  w1_senior_friendly_taught_class_sign: { reviewGroupId: "review_w1_dismissal_friendly_senior", branchId: "ask_how_to_recognize_line", confidence: "strong" },
+  w1_senior_friendly_confirmed_direction: { reviewGroupId: "review_w1_dismissal_friendly_senior", branchId: "walk_then_say_thanks", confidence: "strong" },
+  w1_senior_friendly_followed_direction: { reviewGroupId: "review_w1_dismissal_friendly_senior", branchId: "point_class_badge_shyly", confidence: "strong" },
   w1_dismissal_line_confusion_seniorFriendly_let_senior_check_handbook: { reviewGroupId: "review_w1_dismissal_friendly_senior", branchId: "show_handbook_to_senior", confidence: "strong" },
   w1_dismissal_line_confusion_seniorFriendly_ask_how_to_find_next_time: { reviewGroupId: "review_w1_dismissal_friendly_senior", branchId: "ask_how_to_recognize_line", confidence: "strong" },
   w1_dismissal_line_confusion_seniorFriendly_thank_and_walk_self: { reviewGroupId: "review_w1_dismissal_friendly_senior", branchId: "walk_then_say_thanks", confidence: "strong" },
   w1_dismissal_line_confusion_seniorFriendly_too_shy_show_badge: { reviewGroupId: "review_w1_dismissal_friendly_senior", branchId: "point_class_badge_shyly", confidence: "strong" },
 
   // ---- w1_dismissal_line_confusion / seniorPrefectStrict ----
+  w1_strict_prefect_stepped_aside: { reviewGroupId: "review_w1_dismissal_strict_prefect", branchId: "move_to_line_quickly", confidence: "strong" },
+  w1_strict_prefect_asked_direction: { reviewGroupId: "review_w1_dismissal_strict_prefect", branchId: "ask_prefect_line", confidence: "strong" },
+  w1_strict_prefect_check_handbook: { reviewGroupId: "review_w1_dismissal_strict_prefect", branchId: "avoid_prefect_find_teacher", confidence: "strong" },
+  w1_strict_prefect_followed_classmate: { reviewGroupId: "review_w1_dismissal_strict_prefect", branchId: "follow_wrong_group", confidence: "strong" },
   w1_dismissal_line_confusion_seniorPrefectStrict_move_quickly_to_queue: { reviewGroupId: "review_w1_dismissal_strict_prefect", branchId: "move_to_line_quickly", confidence: "strong" },
   w1_dismissal_line_confusion_seniorPrefectStrict_ask_prefect_class_line: { reviewGroupId: "review_w1_dismissal_strict_prefect", branchId: "ask_prefect_line", confidence: "strong" },
   w1_dismissal_line_confusion_seniorPrefectStrict_look_for_teacher_instead: { reviewGroupId: "review_w1_dismissal_strict_prefect", branchId: "avoid_prefect_find_teacher", confidence: "strong" },

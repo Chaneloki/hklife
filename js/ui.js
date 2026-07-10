@@ -3,7 +3,7 @@
 
 import { getAllBackgroundCategories } from "../data/backgrounds.js";
 import { getCharacterById, getCharacterDisplayName } from "../data/characters.js";
-import { resolveCharacterIcon, DEFAULT_UNKNOWN_ICON, DEFAULT_CHILD_ICON } from "../data/characterIconManifest.js";
+import { resolveCharacterIcon, DEFAULT_UNKNOWN_ICON, DEFAULT_CHILD_ICON, DEFAULT_ADULT_ICON } from "../data/characterIconManifest.js";
 import { getActionById, actionCategories } from "../data/actions.js";
 import { getLocationById } from "../data/locations.js";
 import { getStageCategoryMeta } from "../data/relationshipStages.js";
@@ -883,7 +883,10 @@ export function showStoryScene(scene, onContinue) {
   const dialogueHtml = (scene.dialogueLines || []).map(d => `
     <p class="story-dialogue-line"><span class="story-speaker">${d.speaker}：</span>「${d.text}」</p>
   `).join("");
-  const effectsHtml = (scene.effects || []).map(e => `<li>${e}</li>`).join("");
+  const resultText = (scene.result || "").trim() || "這件小事被你記了下來，成為這六週裡其中一個清楚的片段。";
+  const effects = (scene.effects || []).filter(Boolean);
+  const visibleEffects = effects.length ? effects : ["這段經歷會留在你的六週回顧裡，影響你之後怎樣記住自己和身邊的人。"];
+  const effectsHtml = visibleEffects.map(e => `<li>${e}</li>`).join("");
 
   el.innerHTML = `
     <p class="story-scene-heading">${scene.sceneHeading}</p>
@@ -891,7 +894,7 @@ export function showStoryScene(scene, onContinue) {
     <div class="story-narration-block">${narrationHtml}</div>
     <div class="story-dialogue-block">${dialogueHtml}</div>
     <h5>結果</h5>
-    <p class="story-result">${scene.result}</p>
+    <p class="story-result">${resultText}</p>
     <h5>影響</h5>
     <ul class="story-effects-list">${effectsHtml}</ul>
   `;
@@ -1216,10 +1219,13 @@ export function showDialogue(dialogue, onChoiceSelected, state, options = {}) {
   const overlay = document.getElementById("dialogue-overlay");
   const speakerId = dialogue.senderId || dialogue.speakerId;
   const speaker = getCharacterById(speakerId, state);
+  const speakerDisplayName = speaker
+    ? (getCharacterDisplayName(speakerId, state) || speaker.name)
+    : (dialogue.speakerDisplayName || dialogue.senderName || "");
   const avatarEl = document.getElementById("dialogue-avatar");
-  avatarEl.src = speaker ? resolveCharacterIcon(speaker, state) : DEFAULT_UNKNOWN_ICON;
-  avatarEl.alt = speaker ? escapeHtml(speaker.name || "") : "";
-  document.getElementById("dialogue-name").textContent = speaker ? (getCharacterDisplayName(speakerId, state) || speaker.name) : "神秘人";
+  avatarEl.src = speaker ? resolveCharacterIcon(speaker, state) : (speakerDisplayName === "家人" || speakerDisplayName === "媽媽" || speakerDisplayName === "爸爸" ? DEFAULT_ADULT_ICON : DEFAULT_UNKNOWN_ICON);
+  avatarEl.alt = speaker ? escapeHtml(speaker.name || "") : escapeHtml(speakerDisplayName);
+  document.getElementById("dialogue-name").textContent = speakerDisplayName || "旁白";
 
   const lines = state ? getMessageVariantByRelationship(dialogue, state) : dialogue.lines;
   document.getElementById("dialogue-lines").innerHTML = lines.map(line => {

@@ -200,6 +200,52 @@ export const identityPersonalities = [
     eventWeightModifiers: { school_activity: 1.1, class_service: 0.8 }
   },
 
+  // ---------- same_age_neighbor（4；S2-W1–S2-W6 校外同齡鄰居） ----------
+  {
+    id: "pers_neighbor_quick_invite", identityTypeId: "same_age_neighbor", label: "快手邀請型",
+    description: "很快開口，很快把升降機、平台、商場都說成「一齊去睇吓」。",
+    values: ["共同回憶", "社區熟路"], likesAttitudes: ["acceptWarmly", "askForHelp"], dislikesAttitudes: ["staySilent"],
+    respectsBoundaries: false, sensitiveToSilence: true, valuesHonesty: false, valuesCuriosity: true, valuesReliability: false,
+    valuesAchievement: false, valuesIndependence: false, valuesGroupHarmony: true,
+    reactionProfileId: "reaction_peer_fun",
+    toneLines: { greeting: "喂，", closenessHigh: "一陣落平台睇吓啦。", closenessLow: "得閒喺樓下見啦。", misunderstandingHigh: "你係咪唔想一齊玩？" },
+    goalGivingStyle: "不給正式目標，只會快速邀請", conflictStyle: "熱情太快，但不記仇", supportStyle: "校外玩伴入口",
+    eventWeightModifiers: { neighbor: 1.3, holiday: 1.1 }
+  },
+  {
+    id: "pers_neighbor_quiet_collect", identityTypeId: "same_age_neighbor", label: "安靜收藏型",
+    description: "不太會一開始就講很多，較常用貼紙、玩具、鉛筆盒上的圖案讓人知道她想不想靠近。",
+    values: ["小物", "安靜靠近"], likesAttitudes: ["observeFirst", "askForHelp"], dislikesAttitudes: ["takeRisk"],
+    respectsBoundaries: true, sensitiveToSilence: false, valuesHonesty: true, valuesCuriosity: true, valuesReliability: true,
+    valuesAchievement: false, valuesIndependence: false, valuesGroupHarmony: false,
+    reactionProfileId: "reaction_curiosity_based",
+    toneLines: { greeting: "", closenessHigh: "呢張貼紙你睇過未？", closenessLow: "……你睇唔睇？", misunderstandingHigh: "係咪我講得太細聲？" },
+    goalGivingStyle: "不主動推進，以物件和細節建立連結", conflictStyle: "退一步觀察", supportStyle: "安靜陪伴",
+    eventWeightModifiers: { neighbor: 1.2, popCulture: 1.1 }
+  },
+  {
+    id: "pers_neighbor_showy_toy", identityTypeId: "same_age_neighbor", label: "玩具展示型",
+    description: "喜歡把新貼紙、小車、卡通圖案拿出來給人看，有時會不小心變成比較。",
+    values: ["展示", "玩具話題"], likesAttitudes: ["jokeAround", "acceptWarmly"], dislikesAttitudes: ["refuseDirectly"],
+    respectsBoundaries: false, sensitiveToSilence: true, valuesHonesty: false, valuesCuriosity: true, valuesReliability: false,
+    valuesAchievement: false, valuesIndependence: true, valuesGroupHarmony: false,
+    reactionProfileId: "reaction_peer_fun",
+    toneLines: { greeting: "你睇，", closenessHigh: "我有新貼紙，畀你睇。", closenessLow: "呢張好閃㗎。", misunderstandingHigh: "你係咪覺得唔靚？" },
+    goalGivingStyle: "以玩具和貼紙引出話題", conflictStyle: "容易比較，但重點是想被看見", supportStyle: "玩具分享",
+    eventWeightModifiers: { neighbor: 1.2, popCulture: 1.2 }
+  },
+  {
+    id: "pers_neighbor_adult_bridge", identityTypeId: "same_age_neighbor", label: "家長牽線型",
+    description: "多數在家長旁邊出現，等大人介紹、等大人講完、等升降機。",
+    values: ["禮貌", "慢慢熟"], likesAttitudes: ["followAdult", "observeFirst"], dislikesAttitudes: ["takeRisk"],
+    respectsBoundaries: true, sensitiveToSilence: false, valuesHonesty: true, valuesCuriosity: false, valuesReliability: true,
+    valuesAchievement: false, valuesIndependence: false, valuesGroupHarmony: true,
+    reactionProfileId: "reaction_boundary_respect",
+    toneLines: { greeting: "", closenessHigh: "下次可能又喺升降機見。", closenessLow: "我媽媽喺嗰邊。", misunderstandingHigh: "係咪唔應該咁問？" },
+    goalGivingStyle: "不主動給目標，靠家庭場合自然出現", conflictStyle: "看大人臉色後退", supportStyle: "禮貌界線",
+    eventWeightModifiers: { neighbor: 1.1, family: 1.1, festival: 1.2 }
+  },
+
   // ---------- teacher（4；「活動推薦型」已經合併做「關顧型」嘅 event-facing label，唔再係獨立 personality） ----------
   {
     id: "pers_strict_academic", identityTypeId: "teacher", label: "嚴格學業型",

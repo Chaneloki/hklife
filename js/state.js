@@ -222,6 +222,9 @@ export function createInitialState() {
     openingEventCooldowns: {},     // { eventId: totalWeeksElapsed }，配合 cooldownWeeks 判斷幾時先可以再揀
     openingExclusiveGroupUsedThisWeek: {}, // { exclusiveGroup: true }，本週已經用過邊個 exclusiveGroup
     pendingOpeningEvent: null,     // 本週抽中、等緊玩家揀嘅 opening event：{ eventId, variantId }
+    primarySameAgeNeighborId: null, // S2-W1-2 抽中的校外同齡鄰居，之後 S2-W1–S2-W6 沿用
+    primarySameAgeNeighborMet: false,
+    primarySameAgeNeighborNameKnown: false,
 
     // ---------- Skill property 系統 ----------
     // { skillName: number }，具體能力經驗值，同「學業、社交、創意、自信」等核心 property 分開。

@@ -2,6 +2,7 @@
 // NPC 主動訊息只讀 authored content。缺內容時只讓 engine dev warning，正式 UI 不生成 fallback。
 
 import { p1p3ActiveMessages } from "./authored/activeMessagesP1P3.js";
+import { sameAgeNeighborP1P3ActiveMessages } from "./authored/activeMessagesSameAgeNeighborP1P3.js";
 
 export const ACTIVE_MESSAGE_THRESHOLDS = [25, 30, 35, 40, 45];
 
@@ -31,10 +32,16 @@ export const activeMessageSets = {
       ],
       family_parent: ["char_mom", "char_dad"],
       teacher: ["pers_strict_academic", "pers_encouraging_mentor", "pers_fair_observer", "pers_pastoral_care_teacher"],
+      same_age_neighbor: [
+        "pers_neighbor_quick_invite",
+        "pers_neighbor_quiet_collect",
+        "pers_neighbor_showy_toy",
+        "pers_neighbor_adult_bridge"
+      ],
       normal_friend: [],
       special_friend: []
     },
-    messages: p1p3ActiveMessages
+    messages: [...p1p3ActiveMessages, ...sameAgeNeighborP1P3ActiveMessages]
   },
   p4_p6: { authoredOnly: true, messages: [] },
   s1_s3: { authoredOnly: true, messages: [] },

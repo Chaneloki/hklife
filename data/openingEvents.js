@@ -10,16 +10,25 @@ import {
   hkLifeOpeningEventBalancedDesignNote
 } from "./authored/openingEventPool_w1_w6_v5_1.js";
 import { hkLifeSimulatorOpeningEventDialogueW7W12 } from "./authored/openingEventPool_w7_w12_v3_playable.js";
+import {
+  hkLifeSimulatorOpeningEventDialogueS2W1W6,
+  sameAgeNeighborPool,
+  selectedNeighborRule
+} from "./authored/openingEventPool_s2_w1_w6_v0_5.js";
 import { applySeniorStudentContinuity } from "./seniorStudentContinuity.js";
 
 const openingEvents = applySeniorStudentContinuity([
   ...authoredOpeningEvents,
-  ...hkLifeSimulatorOpeningEventDialogueW7W12
+  ...hkLifeSimulatorOpeningEventDialogueW7W12,
+  ...hkLifeSimulatorOpeningEventDialogueS2W1W6
 ]);
 
 export {
   openingEvents,
   hkLifeSimulatorOpeningEventDialogueW7W12,
+  hkLifeSimulatorOpeningEventDialogueS2W1W6,
+  sameAgeNeighborPool,
+  selectedNeighborRule,
   hkLifeMainStatusKeys,
   hkLifeSkillKeys,
   hkLifeOpeningEventBalancedDesignNote

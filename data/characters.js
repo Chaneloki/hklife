@@ -20,9 +20,14 @@ const IDENTITY_LIFE_DIRECTION_INFLUENCE = {
   family_elder: [{ directionId: "direction_family", weight: 3 }],
   family_peer: [{ directionId: "direction_family", weight: 1 }],
   same_age_peer: [{ directionId: "direction_social", weight: 3 }],
+  same_age_neighbor: [{ directionId: "direction_social", weight: 1 }],
   teacher: [{ directionId: "direction_academic", weight: 3 }],
   tutor: [{ directionId: "direction_academic", weight: 2 }],
   senior_student: [{ directionId: "direction_social", weight: 1 }]
+};
+
+export const relationshipTargets = {
+  same_age_neighbor: ["neighbor_lokyin", "neighbor_wingching", "neighbor_holong", "neighbor_manhei"]
 };
 
 const TEACHER_SURNAMES = ["陳", "黃", "林", "李", "張", "馬", "周", "何", "鄭", "梁"];
@@ -38,6 +43,46 @@ export const characterSlots = [
   { id: "char_classmate", identityTypeId: "same_age_peer", roleLabel: "隔離位同學", startKnown: true },
   { id: "char_best_friend", identityTypeId: "same_age_peer", roleLabel: "同班同學", startKnown: false },
   { id: "char_tutor", identityTypeId: "tutor", roleLabel: "補習導師", nameSuffix: "Miss/Sir", startKnown: false },
+  {
+    id: "neighbor_lokyin",
+    identityTypeId: "same_age_neighbor",
+    roleLabel: "同座小朋友",
+    fixedName: "樂言",
+    displayNameUnknown: "同座小朋友",
+    forcedPersonalityId: "pers_neighbor_quick_invite",
+    explicitIconPath: "/assets/icons/characters/same_age_neighbor/icon_樂言.png",
+    startKnown: false
+  },
+  {
+    id: "neighbor_wingching",
+    identityTypeId: "same_age_neighbor",
+    roleLabel: "平台女孩",
+    fixedName: "詠晴",
+    displayNameUnknown: "平台女孩",
+    forcedPersonalityId: "pers_neighbor_quiet_collect",
+    explicitIconPath: "/assets/icons/characters/same_age_neighbor/icon_詠晴.png",
+    startKnown: false
+  },
+  {
+    id: "neighbor_holong",
+    identityTypeId: "same_age_neighbor",
+    roleLabel: "拿貼紙的小朋友",
+    fixedName: "皓朗",
+    displayNameUnknown: "拿貼紙的小朋友",
+    forcedPersonalityId: "pers_neighbor_showy_toy",
+    explicitIconPath: "/assets/icons/characters/same_age_neighbor/icon_皓朗.png",
+    startKnown: false
+  },
+  {
+    id: "neighbor_manhei",
+    identityTypeId: "same_age_neighbor",
+    roleLabel: "跟著家長的小朋友",
+    fixedName: "敏希",
+    displayNameUnknown: "跟著家長的小朋友",
+    forcedPersonalityId: "pers_neighbor_adult_bridge",
+    explicitIconPath: "/assets/icons/characters/same_age_neighbor/icon_敏希.png",
+    startKnown: false
+  },
   {
     id: "senior_friendly_girl_zhiyau",
     identityTypeId: "senior_student",
@@ -196,6 +241,7 @@ export function generateCharacters(s = state) {
       // iconPath 一開始係 null，第一次 resolve 咗先會 cache 落嚟，之後成局用返同一張
       iconPath: null,
       iconSource: null,
+      explicitIconPath: slot.explicitIconPath || null,
       explicitIconName: slot.explicitIconName || null,
       personalityTags: [personality.label],
       personalGoal: personality.description,
